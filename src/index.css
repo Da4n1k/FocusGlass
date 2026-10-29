@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brainbit-orange: #FF6600;
+  --color-brainbit-orange-glow: rgba(255, 102, 0, 0.40);
+  --color-focus-cyan: #00D2FF;
+  --color-focus-cyan-glow: rgba(0, 210, 255, 0.35);
+  --color-calm-violet: #8B5CF6;
+  --color-calm-violet-glow: rgba(139, 92, 246, 0.35);
+  --color-glass-surface: rgba(15, 23, 42, 0.75);
+  --color-glass-subtle: rgba(30, 41, 59, 0.50);
+  --color-glass-border: rgba(255, 255, 255, 0.12);
+  --color-glass-highlight: rgba(255, 255, 255, 0.35);
+  --font-sans: 'Figtree', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+:root {
+  --glass-bg-primary: rgba(11, 15, 25, 0.75);
+  --glass-bg-card: rgba(26, 34, 53, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-border-highlight: rgba(255, 255, 255, 0.35);
+  --glass-specular-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.25);
+  --glass-drop-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.75);
+  --glass-blur-filter: blur(24px) saturate(190%) contrast(105%);
+}
+
+/* Custom Liquid Glass utilities */
+.liquid-glass {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 100%),
+              var(--glass-bg-primary);
+  backdrop-filter: var(--glass-blur-filter);
+  -webkit-backdrop-filter: var(--glass-blur-filter);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-specular-shadow), var(--glass-drop-shadow);
+  position: relative;
+}
+
+.liquid-glass-card {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.015) 100%),
+              var(--glass-bg-card);
+  backdrop-filter: var(--glass-blur-filter);
+  -webkit-backdrop-filter: var(--glass-blur-filter);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.20), 0 16px 32px -8px rgba(0, 0, 0, 0.5);
+  position: relative;
+}
+
+.liquid-glass-bevel {
+  position: relative;
+}
+
+.liquid-glass-bevel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--glass-border-highlight), transparent);
+  pointer-events: none;
+}
+
+/* Glowing Neon Elements */
+.glow-orange {
+  box-shadow: 0 0 24px -4px rgba(255, 102, 0, 0.45);
+}
+
+.glow-cyan {
+  box-shadow: 0 0 24px -4px rgba(0, 210, 255, 0.45);
+}
+
+.glow-violet {
+  box-shadow: 0 0 24px -4px rgba(139, 92, 246, 0.45);
+}
+
+.glow-green {
+  box-shadow: 0 0 20px -4px rgba(16, 185, 129, 0.45);
+}
+
+/* Liquid Bar Wave Animation */
+@keyframes fluid-flow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.liquid-fluid-gradient {
+  background: linear-gradient(270deg, #FF6600, #FF8C00, #00D2FF, #FF6600);
+  background-size: 300% 300%;
+  animation: fluid-flow 8s ease infinite;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.4);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
