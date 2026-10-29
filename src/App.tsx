@@ -33,6 +33,16 @@ export const App: React.FC = () => {
     settings,
   } = useFocusStore();
 
+  // Ctrl+Shift+G (глобальный хоткей в Rust) выключает click-through — синхронизируем состояние
+  React.useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event').then(({ listen }) =>
+      listen('click-through-disabled', () => useFocusStore.setState({ isClickThrough: false }))
+    ).then((fn) => { unlisten = fn; });
+    return () => unlisten?.();
+  }, []);
+
   return (
     <div className="min-h-screen w-full relative flex flex-col font-sans overflow-x-hidden">
       {/* Background Ambient Biofeedback Screen Overlay */}
@@ -48,9 +58,10 @@ export const App: React.FC = () => {
           <GlassPanel
             variant="primary"
             className="px-5 py-3.5 flex items-center justify-between shadow-xl border-white/20"
+            data-tauri-drag-region
           >
             {/* Left: Branding & Logos */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4" data-tauri-drag-region>
               <div className="flex items-center gap-2.5">
                 <img
                   src={brainbitIcon}

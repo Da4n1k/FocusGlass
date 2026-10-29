@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Window};
+use tauri::Window;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceStatusResponse {
