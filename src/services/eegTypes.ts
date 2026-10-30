@@ -1,6 +1,6 @@
 /**
- * FocusGlass Canonical BCI Telemetry & Settings Types
- * Strictly aligned with PROJECT.md and BrainBit SDK Specifications
+ * FocusGlass / MindTint Canonical BCI Telemetry & Settings Types
+ * Aligned with ООО НМФ «Нейротех» BrainBit SDK (neurosdk2 + EmotionalMath)
  */
 
 export interface RawEEGChannels {
@@ -17,6 +17,25 @@ export interface ElectrodeSignalQuality {
   o2: boolean;
 }
 
+/** Dry-electrode contact resistance in kOhm (BrainBit ResistData) */
+export interface ElectrodeImpedanceKOhm {
+  t3: number;
+  t4: number;
+  o1: number;
+  o2: number;
+}
+
+/** Relative EEG spectral band powers in % (sums to ~100%, matches EmotionalMath SpectralDataPercents) */
+export interface RelativeSpectrum {
+  delta: number; // 1 - 3 Hz
+  theta: number; // 4 - 7 Hz
+  alpha: number; // 8 - 13 Hz
+  beta: number;  // 14 - 30 Hz
+  gamma: number; // 31 - 45 Hz
+}
+
+export type TelemetryOrigin = 'simulator' | 'csv_replay' | 'bluetooth';
+
 export interface EEGTelemetry {
   timestamp: number;
   rawChannels: RawEEGChannels;
@@ -24,17 +43,22 @@ export interface EEGTelemetry {
   relaxation: number;    // Alpha-based index: 0 - 100%
   signalQuality: ElectrodeSignalQuality;
   isArtifact: boolean;   // EMG / EOG artifact flag
+  impedanceKOhm?: ElectrodeImpedanceKOhm;
+  spectrum?: RelativeSpectrum;
+  origin?: TelemetryOrigin;
 }
 
 export interface FocusGlassSettings {
   mode: 'concentration' | 'relaxation';
-  deviceSource: 'simulator' | 'bluetooth';
-  threshold: number;          // Target threshold % [10, 95] (default: 60)
-  sensitivitySeconds: number; // Moving average buffer window [0.1, 10.0]s (default: 2.0)
-  dimmingMaxOpacity: number;  // Maximum screen dimming opacity [0.1, 0.95] (default: 0.70)
-  blurRadius: number;         // Maximum optical vignette blur [0, 32]px (default: 16)
-  audioFeedbackEnabled: boolean; // Nature/pink-noise biofeedback sound
-  glassOpacity: number;       // UI panel translucency [0.1, 1.0] (default: 0.85)
+  deviceSource: TelemetryOrigin;
+  threshold: number;             // Target threshold % [10, 95] (default: 60)
+  sensitivitySeconds: number;    // Moving average buffer window [0.1, 10.0]s (default: 2.0)
+  dimmingMaxOpacity: number;     // Maximum screen dimming opacity [0.1, 0.95] (default: 0.70)
+  blurRadius: number;            // Maximum optical vignette blur [0, 32]px (default: 16)
+  audioFeedbackEnabled: boolean; // Pink-noise biofeedback sound
+  glassOpacity: number;          // UI panel translucency [0.1, 1.0] (default: 0.85)
+  pauseOnContactLoss?: boolean;  // Pause dimming adaptation when dry electrode loses contact (default: true)
+  language?: 'ru' | 'en';        // Interface language (default: 'ru')
 }
 
 export interface BiofeedbackFeedbackState {
@@ -47,14 +71,18 @@ export interface BiofeedbackFeedbackState {
   isDimmingActive: boolean;  // True when overlayOpacity > 0.01
   isContactOk: boolean;      // True when all 4 electrodes have good contact
   isArtifactFrozen: boolean; // True when EMG/EOG burst suspends opacity updates
+  isContactPaused?: boolean; // True when poor electrode contact pauses adaptation
 }
 
 export interface DeviceStatus {
   connected: boolean;
-  deviceSource: 'simulator' | 'bluetooth';
-  batteryPercentage: number;
+  deviceSource: TelemetryOrigin;
+  batteryPercentage: number | null;
   deviceName: string;
   samplingRateHz: number;
+  isSimulated: boolean;
+  sdkIntegrated: boolean;
+  statusNote: string;
 }
 
 export interface SessionStatistics {
@@ -73,11 +101,35 @@ export interface CalibrationResult {
   baselineRelaxation: number;
   recommendedThreshold: number;
   confidence: number;
+  sampleCount?: number;
+  calibratedMode?: 'concentration' | 'relaxation';
+}
+
+export interface TimelineSample {
+  elapsedSec: number;
+  concentration: number;
+  relaxation: number;
+  smoothedMetric: number;
+  overlayOpacityPct: number;
+  threshold: number;
+  isArtifact: boolean;
+  isContactOk: boolean;
+}
+
+export interface SavedSessionRecord {
+  id: string;
+  startedAt: string;
+  endedAt: string;
+  deviceSource: TelemetryOrigin;
+  isSimulated: boolean;
+  mode: 'concentration' | 'relaxation';
+  threshold: number;
+  stats: SessionStatistics;
 }
 
 export type PresetState =
   | 'high_focus'      // 90-95% Beta dominant
   | 'calm_flow'       // 75-80% Balanced Alpha/Beta
-  | 'attention_drift' // 45-50% Theta rising, dips below threshold
+  | 'attention_drift' // 40-45% Theta rising, dips below threshold
   | 'distracted'      // 20-30% Mind wandering, deep dimming
   | 'meditation';     // 90-95% Alpha dominant

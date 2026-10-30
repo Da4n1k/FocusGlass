@@ -27,6 +27,9 @@ const testFiles = [
 
   // Tier 4: Real-World Application Scenarios
   resolve('tests/tier4_scenarios/pomodoroSession.test.ts'),
+
+  // Tier 5: Production App Services Verification (src/services/*)
+  resolve('tests/tier5_production_app/productionServices.test.ts'),
 ];
 
 console.log('================================================================');
