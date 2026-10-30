@@ -31,17 +31,32 @@ export const App: React.FC = () => {
     toggleAlwaysOnTop,
     setIsSettingsOpen,
     settings,
+    deviceStatus,
+    telemetry,
+    isPaused,
   } = useFocusStore();
 
   // Ctrl+Shift+G (глобальный хоткей в Rust) выключает click-through — синхронизируем состояние
   React.useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return;
     let unlisten: (() => void) | undefined;
-    import('@tauri-apps/api/event').then(({ listen }) =>
-      listen('click-through-disabled', () => useFocusStore.setState({ isClickThrough: false }))
-    ).then((fn) => { unlisten = fn; });
+    import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen('click-through-disabled', () => useFocusStore.setState({ isClickThrough: false }))
+      )
+      .then((fn) => {
+        unlisten = fn;
+      });
     return () => unlisten?.();
   }, []);
+
+  const isSimulator = settings.deviceSource === 'simulator';
+  const isBleConnected = !isSimulator && deviceStatus.connected;
+
+  const quality = telemetry?.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
+  const activeSensorsCount = isSimulator || isBleConnected
+    ? [quality.t3, quality.t4, quality.o1, quality.o2].filter(Boolean).length
+    : 0;
 
   return (
     <div className="min-h-screen w-full relative flex flex-col font-sans overflow-x-hidden">
@@ -74,11 +89,11 @@ export const App: React.FC = () => {
                       FocusGlass
                     </h1>
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/20 text-[#FF6600] font-mono font-semibold">
-                      v1.0-PROD
+                      v0.2-MVP
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-[10px] text-slate-400">
-                    <span>Powered by BrainBit</span>
+                    <span>BrainBit Biofeedback</span>
                     <span>•</span>
                     <span className="text-slate-300 font-medium">ООО НМФ «Нейротех»</span>
                   </div>
@@ -97,14 +112,24 @@ export const App: React.FC = () => {
 
             {/* Center: Device Badge */}
             <div className="hidden md:flex items-center gap-2">
-              <GlassBadge variant={settings.deviceSource === 'simulator' ? 'orange' : 'cyan'} pulse={true}>
-                {settings.deviceSource === 'simulator'
-                  ? 'Virtual 250Hz Simulator'
-                  : 'BrainBit BLE Headband'}
-              </GlassBadge>
+              {isSimulator ? (
+                <GlassBadge variant="orange" pulse={!isPaused}>
+                  Simulator · 250 Hz
+                </GlassBadge>
+              ) : isBleConnected ? (
+                <GlassBadge variant="cyan" pulse={true}>
+                  BrainBit BLE · Connected
+                </GlassBadge>
+              ) : (
+                <GlassBadge variant="red" pulse={false}>
+                  BrainBit BLE · Disconnected
+                </GlassBadge>
+              )}
 
               <GlassBadge variant="neutral">
-                {settings.mode === 'concentration' ? 'Focus Training (Beta)' : 'Calm Training (Alpha)'}
+                {settings.mode === 'concentration'
+                  ? 'Focus Training (Beta)'
+                  : 'Calm Training (Alpha)'}
               </GlassBadge>
             </div>
 
@@ -127,7 +152,7 @@ export const App: React.FC = () => {
                 variant={isClickThrough ? 'cyan' : 'secondary'}
                 onClick={() => toggleClickThrough()}
                 icon={<MousePointerClick className="w-3.5 h-3.5" />}
-                title="Toggle Click-Through Mode (Pass clicks through window)"
+                title="Toggle Click-Through Mode (Ctrl+Shift+G to restore)"
               >
                 {isClickThrough ? 'Click-Thru' : 'Interactive'}
               </GlassButton>
@@ -182,16 +207,34 @@ export const App: React.FC = () => {
           {/* Bottom Status Ribbon */}
           <footer className="py-2 px-4 rounded-xl bg-slate-950/40 border border-white/5 backdrop-blur-md flex flex-wrap items-center justify-between text-[11px] text-slate-400">
             <div className="flex items-center gap-3">
-              <span className="flex items-center gap-1.5 text-emerald-400 font-mono">
-                <Activity className="w-3 h-3" />
-                250 Hz Continuous Telemetry
-              </span>
+              {isSimulator ? (
+                <span className="flex items-center gap-1.5 text-amber-300 font-mono">
+                  <Activity className="w-3 h-3" />
+                  {isPaused ? 'Simulator Paused' : '250 Hz Synthetic Telemetry'}
+                </span>
+              ) : isBleConnected ? (
+                <span className="flex items-center gap-1.5 text-emerald-400 font-mono">
+                  <Activity className="w-3 h-3" />
+                  250 Hz BrainBit Stream
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-rose-400 font-mono">
+                  <Activity className="w-3 h-3" />
+                  BLE Disconnected (NeuroSDK2 pending)
+                </span>
+              )}
               <span>•</span>
-              <span>Electrodes: T3, T4, O1, O2 Active</span>
+              <span className={activeSensorsCount === 4 ? 'text-slate-300' : 'text-amber-300'}>
+                Contact OK: {activeSensorsCount}/4 (T3, T4, O1, O2)
+              </span>
             </div>
 
             <div className="flex items-center gap-3">
-              <span>Keys 1-5 for Demo Presets · Space to Pause</span>
+              <span>
+                {isSimulator
+                  ? 'Keys 1-5: Demo Presets · Space: Pause'
+                  : 'Ctrl+Shift+G: Exit Click-Through'}
+              </span>
               <span>•</span>
               <button
                 onClick={() => setIsSettingsOpen(true)}

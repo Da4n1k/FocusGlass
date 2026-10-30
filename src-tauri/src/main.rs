@@ -12,6 +12,7 @@ fn main() {
     let restore_handler = restore.clone();
 
     tauri::Builder::default()
+        .manage(commands::DeviceManagerState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -34,7 +35,10 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::set_click_through,
+            commands::set_overlay_mode,
             commands::get_device_status,
+            commands::set_device_source,
+            commands::scan_brainbit_devices,
             commands::toggle_always_on_top,
             commands::minimize_window,
             commands::close_window

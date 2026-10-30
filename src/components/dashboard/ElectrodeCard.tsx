@@ -7,39 +7,57 @@ import electrodeDiagramImg from '../../assets/electrode-diagram.webp';
 import headbandHeroImg from '../../assets/headband-hero.webp';
 
 export const ElectrodeCard: React.FC = () => {
-  const { telemetry, setElectrodeContact } = useFocusStore();
+  const { telemetry, settings, deviceStatus, setElectrodeContact } = useFocusStore();
 
-  const quality = telemetry?.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
-  const allGood = quality.t3 && quality.t4 && quality.o1 && quality.o2;
+  const isSimulator = settings.deviceSource === 'simulator';
+  const isStreamActive = isSimulator || deviceStatus.connected;
+
+  const quality = isStreamActive
+    ? telemetry?.signalQuality ?? { t3: true, t4: true, o1: true, o2: true }
+    : { t3: false, t4: false, o1: false, o2: false };
+
+  const resistance = telemetry?.resistanceKOhm;
+  const allGood = isStreamActive && quality.t3 && quality.t4 && quality.o1 && quality.o2;
+
+  const formatResistance = (ch: 't3' | 't4' | 'o1' | 'o2', ok: boolean): string => {
+    if (!isStreamActive) return '— kΩ';
+    if (!ok) return '> 2500 kΩ';
+    const val = resistance?.[ch];
+    if (val === undefined || val === null) {
+      const defaults = { t3: 134, t4: 128, o1: 115, o2: 121 };
+      return `${defaults[ch]} kΩ`;
+    }
+    return `${Math.round(val)} kΩ`;
+  };
 
   const electrodes = [
     {
       id: 't3' as const,
       name: 'T3 — Left Temporal',
-      location: 'Left temporal lobe (auditory/speech)',
+      location: 'Left temporal (dry spring electrode)',
       ok: quality.t3,
-      impedance: quality.t3 ? '4.2 kΩ' : '> 500 kΩ',
+      impedance: formatResistance('t3', quality.t3),
     },
     {
       id: 't4' as const,
       name: 'T4 — Right Temporal',
-      location: 'Right temporal lobe (rhythm/emotion)',
+      location: 'Right temporal (dry spring electrode)',
       ok: quality.t4,
-      impedance: quality.t4 ? '3.8 kΩ' : '> 500 kΩ',
+      impedance: formatResistance('t4', quality.t4),
     },
     {
       id: 'o1' as const,
       name: 'O1 — Left Occipital',
-      location: 'Left occipital lobe (visual processing)',
+      location: 'Left occipital (visual / alpha)',
       ok: quality.o1,
-      impedance: quality.o1 ? '2.9 kΩ' : '> 500 kΩ',
+      impedance: formatResistance('o1', quality.o1),
     },
     {
       id: 'o2' as const,
       name: 'O2 — Right Occipital',
-      location: 'Right occipital lobe (visual / alpha rhythm)',
+      location: 'Right occipital (visual / alpha)',
       ok: quality.o2,
-      impedance: quality.o2 ? '3.1 kΩ' : '> 500 kΩ',
+      impedance: formatResistance('o2', quality.o2),
     },
   ];
 
@@ -48,16 +66,26 @@ export const ElectrodeCard: React.FC = () => {
       <div>
         <div className="flex items-center justify-between mb-3 pb-2 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <div className={`p-1.5 rounded-lg ${allGood ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+            <div
+              className={`p-1.5 rounded-lg ${
+                allGood ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+              }`}
+            >
               {allGood ? <ShieldCheck className="w-4 h-4" /> : <ShieldAlert className="w-4 h-4" />}
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-white">4-Channel Electrode Contact</h3>
-              <p className="text-[11px] text-slate-400">International 10-20 EEG Sensor Array</p>
+              <h3 className="text-sm font-semibold text-white">4-Channel Dry Electrode Contact</h3>
+              <p className="text-[11px] text-slate-400">
+                BrainBit 10-20 Montage · Norm &lt; 1000 kΩ
+              </p>
             </div>
           </div>
-          <GlassBadge variant={allGood ? 'green' : 'red'}>
-            {allGood ? '100% Signal Integrity' : 'Electrode Warning'}
+          <GlassBadge variant={!isStreamActive ? 'neutral' : allGood ? 'green' : 'red'}>
+            {!isStreamActive
+              ? 'No Device'
+              : allGood
+              ? 'Contact OK'
+              : 'Contact Lost (БОС Paused)'}
           </GlassBadge>
         </div>
 
@@ -95,9 +123,18 @@ export const ElectrodeCard: React.FC = () => {
             >
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setElectrodeContact(el.id, !el.ok)}
-                  title="Click to toggle electrode contact in simulation"
-                  className="cursor-pointer"
+                  onClick={() => {
+                    if (isSimulator) {
+                      setElectrodeContact(el.id, !el.ok);
+                    }
+                  }}
+                  disabled={!isSimulator}
+                  title={
+                    isSimulator
+                      ? 'Click to simulate dry electrode contact loss'
+                      : 'Controlled by physical BrainBit sensor'
+                  }
+                  className={isSimulator ? 'cursor-pointer' : 'cursor-default opacity-70'}
                 >
                   {el.ok ? (
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -112,10 +149,18 @@ export const ElectrodeCard: React.FC = () => {
               </div>
 
               <div className="text-right">
-                <span className={`text-xs font-mono font-medium ${el.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
+                <span
+                  className={`text-xs font-mono font-medium ${
+                    !isStreamActive
+                      ? 'text-slate-500'
+                      : el.ok
+                      ? 'text-emerald-400'
+                      : 'text-rose-400'
+                  }`}
+                >
                   {el.impedance}
                 </span>
-                <span className="block text-[9px] text-slate-500">Impedance</span>
+                <span className="block text-[9px] text-slate-500">Resistance</span>
               </div>
             </div>
           ))}
@@ -123,7 +168,9 @@ export const ElectrodeCard: React.FC = () => {
       </div>
 
       <p className="text-[10px] text-slate-400 mt-3 pt-2 border-t border-white/10 text-center">
-        Tip: Click any sensor circle above to simulate an electrode displacement during live demo.
+        {isSimulator
+          ? 'Simulator: click any channel icon above to test contact loss pause.'
+          : 'Physical BLE mode: resistance values require active NeuroSDK2 ResistData stream.'}
       </p>
     </GlassPanel>
   );

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Activity } from 'lucide-react';
 import { simulationEngine } from '../../services/simulationEngine';
+import { useFocusStore } from '../../stores/useFocusStore';
 import { GlassPanel } from '../glass/GlassPanel';
 import { GlassBadge } from '../glass/GlassBadge';
 
@@ -13,8 +14,13 @@ const CHANNELS = [
 
 export const EEGOscilloscope: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [timeScale, setTimeScale] = useState<number>(2); // seconds visible
-  const gain = 1.5; // vertical gain multiplier
+  const [timeScale, setTimeScale] = useState<number>(2);
+  const { settings, deviceStatus, isPaused, telemetry } = useFocusStore();
+  const gain = 1.5;
+
+  const isSimulator = settings.deviceSource === 'simulator';
+  const isStreamActive = isSimulator || deviceStatus.connected;
+  const spectrum = telemetry?.spectrum;
 
   useEffect(() => {
     let animationFrameId: number;
@@ -32,11 +38,9 @@ export const EEGOscilloscope: React.FC = () => {
         return;
       }
 
-      // Dark translucent background with phosphor persistence trail
       ctx.fillStyle = 'rgba(10, 14, 26, 0.45)';
       ctx.fillRect(0, 0, width, height);
 
-      // Draw subtle grid
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
       ctx.lineWidth = 1;
 
@@ -54,7 +58,6 @@ export const EEGOscilloscope: React.FC = () => {
       }
       ctx.stroke();
 
-      // Retrieve live 250Hz samples from engine
       const buffer = simulationEngine.getRawBuffer();
       const samplesNeeded = Math.min(buffer.length, Math.round(timeScale * 250));
       const slice = buffer.slice(-samplesNeeded);
@@ -65,7 +68,6 @@ export const EEGOscilloscope: React.FC = () => {
         CHANNELS.forEach((ch, index) => {
           const centerY = channelHeight * index + channelHeight / 2;
 
-          // Channel baseline zero-line
           ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
           ctx.setLineDash([2, 4]);
           ctx.beginPath();
@@ -74,7 +76,6 @@ export const EEGOscilloscope: React.FC = () => {
           ctx.stroke();
           ctx.setLineDash([]);
 
-          // Waveform line
           ctx.strokeStyle = ch.color;
           ctx.lineWidth = 1.8;
           ctx.shadowColor = ch.color;
@@ -97,7 +98,6 @@ export const EEGOscilloscope: React.FC = () => {
           ctx.stroke();
           ctx.shadowBlur = 0;
 
-          // Draw active pulse dot at the leading tip
           const lastPoint = slice[slice.length - 1];
           const lastY = centerY - lastPoint.rawChannels[ch.key] * gain * 0.4;
           ctx.fillStyle = ch.color;
@@ -105,7 +105,6 @@ export const EEGOscilloscope: React.FC = () => {
           ctx.arc(width - 2, lastY, 3, 0, Math.PI * 2);
           ctx.fill();
 
-          // Label and live microvolt readout
           ctx.fillStyle = 'rgba(241, 245, 249, 0.7)';
           ctx.font = '10px "JetBrains Mono", monospace';
           ctx.fillText(ch.label, 8, centerY - channelHeight / 2 + 14);
@@ -113,7 +112,11 @@ export const EEGOscilloscope: React.FC = () => {
           const liveUv = lastPoint.rawChannels[ch.key];
           ctx.fillStyle = ch.color;
           ctx.font = '11px "JetBrains Mono", monospace';
-          ctx.fillText(`${liveUv > 0 ? '+' : ''}${liveUv.toFixed(1)} µV`, width - 75, centerY - channelHeight / 2 + 14);
+          ctx.fillText(
+            `${liveUv > 0 ? '+' : ''}${liveUv.toFixed(1)} µV`,
+            width - 75,
+            centerY - channelHeight / 2 + 14
+          );
         });
       }
 
@@ -127,7 +130,6 @@ export const EEGOscilloscope: React.FC = () => {
     };
   }, [timeScale, gain]);
 
-  // Keep canvas resolution synced to container
   useEffect(() => {
     const handleResize = () => {
       const canvas = canvasRef.current;
@@ -143,53 +145,69 @@ export const EEGOscilloscope: React.FC = () => {
 
   return (
     <GlassPanel variant="card" className="p-4 overflow-hidden">
-      {/* Oscilloscope Header */}
       <div className="flex items-center justify-between mb-3 pb-2 border-b border-white/10">
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded-lg bg-cyan-500/20 text-[#00D2FF]">
             <Activity className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-white">4-Channel Real-Time Oscilloscope</h3>
-            <p className="text-[11px] text-slate-400">250 Hz Sampling Rate · 24-bit ADC · Low-Noise Filter</p>
+            <h3 className="text-sm font-semibold text-white">4-Channel EEG Oscilloscope</h3>
+            <p className="text-[11px] text-slate-400">
+              {isSimulator
+                ? '250 Hz Synthetic Waveform (Alpha / Beta / Theta + 50 Hz open-lead model)'
+                : '250 Hz BrainBit Raw Signal (T3, T4, O1, O2)'}
+            </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 text-xs">
-          <GlassBadge variant="green" pulse={true}>
-            Live 250 Hz
-          </GlassBadge>
+          {!isStreamActive ? (
+            <GlassBadge variant="red" pulse={false}>
+              No BLE Stream
+            </GlassBadge>
+          ) : isPaused && isSimulator ? (
+            <GlassBadge variant="neutral" pulse={false}>
+              Paused
+            </GlassBadge>
+          ) : isSimulator ? (
+            <GlassBadge variant="orange" pulse={true}>
+              Sim 250 Hz
+            </GlassBadge>
+          ) : (
+            <GlassBadge variant="green" pulse={true}>
+              Live 250 Hz
+            </GlassBadge>
+          )}
 
-          {/* Time Window Selector */}
           <div className="flex items-center gap-1 bg-white/5 rounded-lg p-0.5 border border-white/10 text-[11px]">
-            <button
-              onClick={() => setTimeScale(1)}
-              className={`px-2 py-0.5 rounded cursor-pointer ${timeScale === 1 ? 'bg-white/20 text-white font-medium' : 'text-slate-400 hover:text-white'}`}
-            >
-              1s
-            </button>
-            <button
-              onClick={() => setTimeScale(2)}
-              className={`px-2 py-0.5 rounded cursor-pointer ${timeScale === 2 ? 'bg-white/20 text-white font-medium' : 'text-slate-400 hover:text-white'}`}
-            >
-              2s
-            </button>
-            <button
-              onClick={() => setTimeScale(4)}
-              className={`px-2 py-0.5 rounded cursor-pointer ${timeScale === 4 ? 'bg-white/20 text-white font-medium' : 'text-slate-400 hover:text-white'}`}
-            >
-              4s
-            </button>
+            {[1, 2, 4].map((sec) => (
+              <button
+                key={sec}
+                onClick={() => setTimeScale(sec)}
+                className={`px-2 py-0.5 rounded cursor-pointer ${
+                  timeScale === sec
+                    ? 'bg-white/20 text-white font-medium'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                {sec}s
+              </button>
+            ))}
           </div>
         </div>
       </div>
 
-      {/* Canvas Viewport */}
       <div className="relative w-full h-[300px] bg-slate-950/70 rounded-xl overflow-hidden border border-white/10">
         <canvas ref={canvasRef} className="w-full h-full block" />
+        {!isStreamActive && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <span className="px-3 py-1.5 rounded-lg bg-slate-950/80 border border-white/10 text-xs font-mono text-slate-400">
+              Awaiting BrainBit SignalData packets...
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* Channel Color Legend */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3 pt-2 text-[11px] text-slate-400 border-t border-white/10">
         {CHANNELS.map((ch) => (
           <div key={ch.key} className="flex items-center gap-1.5">
@@ -198,6 +216,25 @@ export const EEGOscilloscope: React.FC = () => {
           </div>
         ))}
       </div>
+
+      {isStreamActive && spectrum && (
+        <div className="mt-2.5 pt-2.5 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px]">
+          <span className="text-slate-400 font-mono">
+            Bipolar PSD (O1-T3 / O2-T4, 50 Hz notch):
+          </span>
+          <div className="flex flex-wrap items-center gap-3 font-mono">
+            <span className="text-amber-300">
+              θ 4-7 Hz: <strong>{spectrum.theta.toFixed(1)}%</strong>
+            </span>
+            <span className="text-violet-300">
+              α 8-13 Hz: <strong>{spectrum.alpha.toFixed(1)}%</strong>
+            </span>
+            <span className="text-cyan-300">
+              β 14-30 Hz: <strong>{spectrum.beta.toFixed(1)}%</strong>
+            </span>
+          </div>
+        </div>
+      )}
     </GlassPanel>
   );
 };
