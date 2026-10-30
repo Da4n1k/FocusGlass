@@ -1,5 +1,5 @@
 import React from 'react';
-import { Target, Zap, Sparkles, Wind } from 'lucide-react';
+import { Target, Zap, Sparkles, Wind, AlertTriangle } from 'lucide-react';
 import { useFocusStore } from '../../stores/useFocusStore';
 import { GlassPanel } from '../glass/GlassPanel';
 import { GlassBadge } from '../glass/GlassBadge';
@@ -13,14 +13,22 @@ export const BentoMetricGrid: React.FC = () => {
     telemetry,
     feedbackState,
     settings,
+    deviceStatus,
     updateSettings,
     activePreset,
     setPreset,
   } = useFocusStore();
 
   const isConcentration = settings.mode === 'concentration';
-  const focusScore = telemetry?.concentration ?? feedbackState.smoothedMetric;
-  const calmScore = telemetry?.relaxation ?? 65;
+  const isSimulator = settings.deviceSource === 'simulator';
+  const isStreamActive = isSimulator || deviceStatus.connected;
+
+  const focusScore = isConcentration
+    ? feedbackState.smoothedMetric
+    : telemetry?.concentration ?? 0;
+  const calmScore = !isConcentration
+    ? feedbackState.smoothedMetric
+    : telemetry?.relaxation ?? 0;
   const threshold = settings.threshold;
 
   return (
@@ -37,22 +45,49 @@ export const BentoMetricGrid: React.FC = () => {
                 </div>
                 <div>
                   <h2 className="text-base font-bold text-white tracking-wide">
-                    {isConcentration ? 'Concentration & Beta Rhythm' : 'Relaxation & Alpha Rhythm'}
+                    {isConcentration
+                      ? 'Concentration & Beta Rhythm'
+                      : 'Relaxation & Alpha Rhythm'}
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Real-time BCI Neurofeedback Index (Emotions SDK)
+                    {isSimulator
+                      ? 'Simulated BCI Stream (250 Hz · Smoothing Window Active)'
+                      : 'BrainBit BLE Telemetry (EmotionalMath Indices)'}
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-2">
-                <GlassBadge variant={settings.mode === 'concentration' ? 'orange' : 'violet'}>
-                  {settings.mode === 'concentration' ? 'Focus Mode' : 'Calm Mode'}
+                {!feedbackState.isContactOk && isStreamActive && (
+                  <GlassBadge variant="red">Contact Lost</GlassBadge>
+                )}
+                {feedbackState.isArtifactFrozen && isStreamActive && (
+                  <GlassBadge variant="orange">Artifact Freeze</GlassBadge>
+                )}
+                <GlassBadge variant={isConcentration ? 'orange' : 'violet'}>
+                  {isConcentration ? 'Focus Mode' : 'Calm Mode'}
                 </GlassBadge>
               </div>
             </div>
 
-            {/* Circular / Ring Visualizer */}
+            {!isStreamActive && (
+              <div className="mb-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-xs text-amber-200">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>
+                    BrainBit BLE is not connected (NeuroSDK2 adapter pending). Switch to Simulator to test БОС rules.
+                  </span>
+                </div>
+                <button
+                  onClick={() => updateSettings({ deviceSource: 'simulator' })}
+                  className="px-2.5 py-1 rounded-lg bg-[#FF6600]/25 hover:bg-[#FF6600]/35 border border-[#FF6600]/50 text-white font-medium shrink-0 cursor-pointer"
+                >
+                  Use Simulator
+                </button>
+              </div>
+            )}
+
+            {/* Gauges */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 my-2">
               {/* Focus Metric Box */}
               <div
@@ -75,14 +110,13 @@ export const BentoMetricGrid: React.FC = () => {
 
                 <div className="flex items-baseline gap-2 mb-2">
                   <span className="text-4xl font-black font-mono tracking-tight text-white">
-                    {Math.round(focusScore)}%
+                    {isStreamActive ? `${Math.round(focusScore)}%` : '—'}
                   </span>
                   <span className="text-xs text-slate-400 font-mono">
                     Target ≥ {threshold}%
                   </span>
                 </div>
 
-                {/* Progress bar */}
                 <div className="h-2.5 w-full bg-slate-900 rounded-full overflow-hidden border border-white/10 p-0.5">
                   <div
                     className={`h-full rounded-full transition-all duration-300 ${
@@ -90,7 +124,9 @@ export const BentoMetricGrid: React.FC = () => {
                         ? 'bg-gradient-to-r from-orange-500 to-amber-300'
                         : 'bg-gradient-to-r from-red-600 to-orange-500'
                     }`}
-                    style={{ width: `${Math.max(4, Math.min(100, focusScore))}%` }}
+                    style={{
+                      width: `${isStreamActive ? Math.max(4, Math.min(100, focusScore)) : 0}%`,
+                    }}
                   />
                 </div>
 
@@ -120,18 +156,19 @@ export const BentoMetricGrid: React.FC = () => {
 
                 <div className="flex items-baseline gap-2 mb-2">
                   <span className="text-4xl font-black font-mono tracking-tight text-white">
-                    {Math.round(calmScore)}%
+                    {isStreamActive ? `${Math.round(calmScore)}%` : '—'}
                   </span>
                   <span className="text-xs text-slate-400 font-mono">
                     Target ≥ {threshold}%
                   </span>
                 </div>
 
-                {/* Progress bar */}
                 <div className="h-2.5 w-full bg-slate-900 rounded-full overflow-hidden border border-white/10 p-0.5">
                   <div
                     className="h-full rounded-full bg-gradient-to-r from-purple-600 via-[#8B5CF6] to-cyan-400 transition-all duration-300"
-                    style={{ width: `${Math.max(4, Math.min(100, calmScore))}%` }}
+                    style={{
+                      width: `${isStreamActive ? Math.max(4, Math.min(100, calmScore)) : 0}%`,
+                    }}
                   />
                 </div>
 
@@ -150,18 +187,18 @@ export const BentoMetricGrid: React.FC = () => {
                 max={90}
                 step={5}
                 unit="%"
-                accentColor="orange"
-                description="When the active metric falls below this threshold, screen opacity smoothly dims to cue refocusing."
+                accentColor={isConcentration ? 'orange' : 'violet'}
+                description="When the smoothed active metric falls below this threshold, screen opacity dims proportionally."
                 onChange={(val) => updateSettings({ threshold: val })}
               />
             </div>
           </div>
 
-          {/* Preset Buttons Bar */}
+          {/* Preset Buttons Bar (Simulator Only) */}
           <div className="mt-4 pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs text-slate-400 flex items-center gap-1">
               <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              Live Presentation Hotkeys:
+              Simulator Presets:
             </span>
             <div className="flex flex-wrap items-center gap-1.5">
               {[
@@ -172,11 +209,14 @@ export const BentoMetricGrid: React.FC = () => {
               ].map((p) => (
                 <button
                   key={p.key}
+                  disabled={!isSimulator}
                   onClick={() => setPreset(p.preset)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
-                    activePreset === p.preset
-                      ? 'bg-[#FF6600]/30 text-[#FF6600] border-[#FF6600]/60 shadow-[0_0_12px_rgba(255,102,0,0.3)]'
-                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${
+                    !isSimulator
+                      ? 'opacity-40 cursor-not-allowed bg-white/5 text-slate-500 border-white/10'
+                      : activePreset === p.preset
+                      ? 'bg-[#FF6600]/30 text-[#FF6600] border-[#FF6600]/60 shadow-[0_0_12px_rgba(255,102,0,0.3)] cursor-pointer'
+                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10 cursor-pointer'
                   }`}
                 >
                   <kbd className="font-mono text-white/70 mr-1.5">[{p.key}]</kbd>

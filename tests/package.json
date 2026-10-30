@@ -4,10 +4,10 @@
   "description": "E2E 4-Tier Test Suite for FocusGlass",
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types tests/runner.ts",
-    "test:tier1": "node --experimental-strip-types --test tests/tier1_features/*.test.ts",
-    "test:tier2": "node --experimental-strip-types --test tests/tier2_boundaries/*.test.ts",
-    "test:tier3": "node --experimental-strip-types --test tests/tier3_combinations/*.test.ts",
-    "test:tier4": "node --experimental-strip-types --test tests/tier4_scenarios/*.test.ts"
+    "test": "node --import ./tests/tsLoader.mjs tests/runner.ts",
+    "test:tier1": "node --import ./tests/tsLoader.mjs --test tests/tier1_features/*.test.ts",
+    "test:tier2": "node --import ./tests/tsLoader.mjs --test tests/tier2_boundaries/*.test.ts",
+    "test:tier3": "node --import ./tests/tsLoader.mjs --test tests/tier3_combinations/*.test.ts",
+    "test:tier4": "node --import ./tests/tsLoader.mjs --test tests/tier4_scenarios/*.test.ts"
   }
 }

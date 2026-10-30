@@ -1,19 +1,19 @@
-/**
- * Master E2E Test Suite Runner for FocusGlass (Tiers 1-4)
- */
-
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const loaderUrl = pathToFileURL(resolve('tests/tsLoader.mjs')).href;
 
 const testFiles = [
-  // Tier 1: Feature Coverage (>=5 tests per core feature)
+  // Tier 1: Core Feature Coverage & Live Src Integration
   resolve('tests/tier1_features/opacityTransitions.test.ts'),
   resolve('tests/tier1_features/clickThrough.test.ts'),
   resolve('tests/tier1_features/trainingModes.test.ts'),
   resolve('tests/tier1_features/thresholdAdjustment.test.ts'),
   resolve('tests/tier1_features/telemetryStream.test.ts'),
   resolve('tests/tier1_features/electrodeQuality.test.ts'),
+  resolve('tests/tier1_features/liveEngineIntegration.test.ts'),
 
   // Tier 2: Boundary & Corner Cases
   resolve('tests/tier2_boundaries/extremeLimits.test.ts'),
@@ -29,13 +29,11 @@ const testFiles = [
   resolve('tests/tier4_scenarios/pomodoroSession.test.ts'),
 ];
 
-console.log('================================================================');
-console.log('  FocusGlass E2E Dual Track Verification Suite (Tiers 1-4)');
-console.log('================================================================');
-console.log(`Executing ${testFiles.length} test files across 4 tiers...\n`);
+console.log(`Running FocusGlass test suite (${testFiles.length} files)...\n`);
 
 const stream = run({
   files: testFiles,
+  execArgv: ['--import', loaderUrl],
 });
 
 stream.compose(new spec()).pipe(process.stdout);
@@ -47,13 +45,11 @@ stream.on('test:fail', () => {
 });
 
 stream.on('end', () => {
-  console.log('\n================================================================');
   if (hasFailures) {
-    console.error('❌ E2E Test Suite FAILED: one or more tests failed.');
+    console.error('\nTest suite failed.');
     process.exit(1);
   } else {
-    console.log('✅ E2E Test Suite PASSED: All 4 tiers verified successfully!');
-    console.log('================================================================');
+    console.log('\nAll tests passed.');
     process.exit(0);
   }
 });
