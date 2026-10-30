@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && out=$(timeout 20 git pull --ff-only 2>&1); echo \"[git pull] $out\"; true",
+            "timeout": 30,
+            "statusMessage": "git pull..."
+          }
+        ]
+      }
+    ]
+  }
+}

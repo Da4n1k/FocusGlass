@@ -39,3 +39,6 @@ src-tauri/gen/
 
 # Agent working files
 .agents/
+
+# Claude Code: личные настройки
+.claude/settings.local.json
