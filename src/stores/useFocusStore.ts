@@ -157,6 +157,12 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     }
   });
 
+  void tauriBridge.onBrainBitRawSignal((packet) => {
+    if (get().settings.deviceSource === 'bluetooth') {
+      simulationEngine.ingestRawBrainBitPacket(packet);
+    }
+  });
+
   return {
     settings: initialSettings,
 
@@ -181,7 +187,15 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     },
 
     viewMode: 'dashboard',
-    setViewMode: (mode) => set({ viewMode: mode }),
+    setViewMode: (mode) => {
+      if (mode === 'dashboard' && get().isClickThrough) {
+        void tauriBridge.setClickThrough(false);
+        set({ viewMode: mode, isClickThrough: false });
+      } else {
+        set({ viewMode: mode });
+      }
+      void tauriBridge.setOverlayMode(mode === 'hud');
+    },
 
     isClickThrough: false,
     setClickThrough: async (enabled) => {
@@ -202,7 +216,14 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     },
 
     isSettingsOpen: false,
-    setIsSettingsOpen: (open) => set({ isSettingsOpen: open }),
+    setIsSettingsOpen: (open) => {
+      if (open && get().isClickThrough) {
+        void tauriBridge.setClickThrough(false);
+        set({ isSettingsOpen: open, isClickThrough: false });
+      } else {
+        set({ isSettingsOpen: open });
+      }
+    },
 
     activeTab: 'monitor',
     setActiveTab: (tab) => set({ activeTab: tab }),

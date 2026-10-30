@@ -6,8 +6,10 @@ import type {
   PresetState,
   ElectrodeSignalQuality,
   ChannelResistanceKOhm,
+  RawBrainBitPacket,
 } from './eegTypes';
 import { BiofeedbackEngine, DEFAULT_SETTINGS } from './biofeedbackEngine';
+import { EEGSignalProcessor } from './eegSignalProcessor';
 
 type TelemetrySubscriber = (
   telemetry: EEGTelemetry,
@@ -40,6 +42,7 @@ export class SimulationEngine {
 
   private settings: FocusGlassSettings = { ...DEFAULT_SETTINGS };
   private biofeedback: BiofeedbackEngine = new BiofeedbackEngine(DEFAULT_SETTINGS, 250);
+  private signalProcessor: EEGSignalProcessor = new EEGSignalProcessor(250);
   private latestTelemetry: EEGTelemetry | null = null;
 
   private subscribers: Set<TelemetrySubscriber> = new Set();
@@ -61,7 +64,6 @@ export class SimulationEngine {
         return;
       }
 
-      // Simulator demo hotkeys apply only when simulator source is active
       if (this.settings.deviceSource !== 'simulator') return;
 
       switch (e.key) {
@@ -115,10 +117,6 @@ export class SimulationEngine {
     }
   }
 
-  /**
-   * Advances the synthetic 250 Hz generator by `sampleCount` samples and notifies subscribers.
-   * Exposed publicly so integration tests can step deterministically without wall-clock timers.
-   */
   public stepSamples(sampleCount: number = 4): BiofeedbackFeedbackState {
     let latestState = this.biofeedback.getLastState();
     const count = Math.max(1, sampleCount);
@@ -142,19 +140,43 @@ export class SimulationEngine {
   }
 
   /**
-   * Entry point for real BrainBit packets arriving from Tauri NeuroSDK2 / EmotionalMath IPC.
+   * Entry point for full EEGTelemetry packets (e.g. NeuroSDK2 + EmotionalMath).
    */
   public ingestExternalTelemetry(telemetry: EEGTelemetry): BiofeedbackFeedbackState {
-    const state = this.biofeedback.processTelemetry(telemetry);
-    this.latestTelemetry = telemetry;
-    this.rawBatchBuffer.push(telemetry);
+    let enriched = telemetry;
+    if (!telemetry.spectrum) {
+      const snap = this.signalProcessor.processSample(
+        telemetry.rawChannels,
+        telemetry.signalQuality
+      );
+      enriched = { ...telemetry, spectrum: snap.spectrum };
+    }
+
+    const state = this.biofeedback.processTelemetry(enriched);
+    this.latestTelemetry = enriched;
+    this.rawBatchBuffer.push(enriched);
 
     if (this.rawBatchBuffer.length > 1000) {
       this.rawBatchBuffer = this.rawBatchBuffer.slice(-1000);
     }
 
-    this.notify(telemetry, state, this.biofeedback.getSessionStats());
+    this.notify(enriched, state, this.biofeedback.getSessionStats());
     return state;
+  }
+
+  /**
+   * Entry point for raw 4-channel NeuroSDK2 SignalData when EmotionalMath DLL is not linked:
+   * computes bipolar derivations, 50 Hz notch, 110 uV artifact flag, and spectral indices.
+   */
+  public ingestRawBrainBitPacket(packet: RawBrainBitPacket): BiofeedbackFeedbackState {
+    const quality = packet.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
+    const frame = this.signalProcessor.toTelemetryFrame({
+      timestamp: packet.timestamp ?? Date.now(),
+      rawChannels: packet.rawChannels,
+      signalQuality: quality,
+      resistanceKOhm: packet.resistanceKOhm,
+    });
+    return this.ingestExternalTelemetry(frame);
   }
 
   public updateSettings(newSettings: Partial<FocusGlassSettings>): void {
@@ -163,9 +185,11 @@ export class SimulationEngine {
     this.biofeedback.updateSettings(newSettings);
     this.settings = { ...this.biofeedback.getSettings() };
 
+    if (prevSource !== this.settings.deviceSource) {
+      this.signalProcessor.reset();
+    }
+
     if (prevSource !== this.settings.deviceSource && this.settings.deviceSource === 'bluetooth') {
-      // Clear synthetic oscilloscope buffer and ensure screen is not left dimmed
-      // while awaiting a physical BrainBit connection.
       this.rawBatchBuffer = [];
       if (this.latestTelemetry) {
         const safeState: BiofeedbackFeedbackState = {
@@ -197,6 +221,7 @@ export class SimulationEngine {
 
   public resetSession(): void {
     this.biofeedback.resetSession();
+    this.signalProcessor.reset();
     this.rawBatchBuffer = [];
     if (this.latestTelemetry) {
       this.notify(
@@ -260,13 +285,14 @@ export class SimulationEngine {
     const dt = 1 / this.sampleRateHz;
     this.currentTimestamp += Math.round(dt * 1000);
 
-    this.phaseAlpha += 2 * Math.PI * 10.2 * dt;
-    this.phaseBeta += 2 * Math.PI * 21.5 * dt;
+    this.phaseAlpha += 2 * Math.PI * 10.0 * dt;
+    this.phaseBeta += 2 * Math.PI * 21.0 * dt;
     this.phaseTheta += 2 * Math.PI * 6.0 * dt;
     this.phaseMains50Hz += 2 * Math.PI * 50.0 * dt;
 
     let targetConcentration = 78;
     let targetRelaxation = 65;
+    let thetaAmp = 10;
     let alphaAmp = 18;
     let betaAmp = 22;
 
@@ -274,31 +300,36 @@ export class SimulationEngine {
       case 'high_focus':
         targetConcentration = 92;
         targetRelaxation = 40;
+        thetaAmp = 6;
         alphaAmp = 8;
-        betaAmp = 38;
+        betaAmp = 36;
         break;
       case 'calm_flow':
         targetConcentration = 78;
         targetRelaxation = 72;
+        thetaAmp = 10;
         alphaAmp = 24;
         betaAmp = 24;
         break;
       case 'attention_drift':
         targetConcentration = 42;
         targetRelaxation = 48;
-        alphaAmp = 20;
-        betaAmp = 12;
+        thetaAmp = 26;
+        alphaAmp = 16;
+        betaAmp = 9;
         break;
       case 'distracted':
         targetConcentration = 22;
         targetRelaxation = 28;
-        alphaAmp = 14;
-        betaAmp = 8;
+        thetaAmp = 34;
+        alphaAmp = 12;
+        betaAmp = 6;
         break;
       case 'meditation':
         targetConcentration = 35;
         targetRelaxation = 94;
-        alphaAmp = 46;
+        thetaAmp = 12;
+        alphaAmp = 44;
         betaAmp = 6;
         break;
     }
@@ -308,18 +339,24 @@ export class SimulationEngine {
     const finalConcentration = Math.max(0, Math.min(100, targetConcentration + noise));
     const finalRelaxation = Math.max(0, Math.min(100, targetRelaxation - noise));
 
-    let t3 = Math.sin(this.phaseBeta) * betaAmp + Math.cos(this.phaseAlpha) * alphaAmp;
+    // Temporal leads carry stronger Beta; Occipital leads carry stronger posterior Alpha
+    let t3 =
+      Math.sin(this.phaseBeta) * betaAmp +
+      Math.cos(this.phaseAlpha) * (alphaAmp * 0.4) +
+      Math.sin(this.phaseTheta) * (thetaAmp * 0.5);
     let t4 =
       Math.sin(this.phaseBeta + 0.35) * betaAmp +
-      Math.cos(this.phaseAlpha + 0.35) * alphaAmp;
+      Math.cos(this.phaseAlpha + 0.35) * (alphaAmp * 0.4) +
+      Math.sin(this.phaseTheta + 0.2) * (thetaAmp * 0.5);
     let o1 =
-      Math.sin(this.phaseAlpha) * (alphaAmp * 1.6) +
-      Math.cos(this.phaseBeta) * (betaAmp * 0.6);
+      Math.sin(this.phaseAlpha) * (alphaAmp * 1.5) +
+      Math.cos(this.phaseBeta) * (betaAmp * 0.35) -
+      Math.sin(this.phaseTheta) * (thetaAmp * 0.9);
     let o2 =
-      Math.sin(this.phaseAlpha + 0.25) * (alphaAmp * 1.6) +
-      Math.cos(this.phaseBeta + 0.25) * (betaAmp * 0.6);
+      Math.sin(this.phaseAlpha + 0.25) * (alphaAmp * 1.5) +
+      Math.cos(this.phaseBeta + 0.25) * (betaAmp * 0.35) -
+      Math.sin(this.phaseTheta + 0.2) * (thetaAmp * 0.9);
 
-    // Detached dry electrode exhibits open-lead 50 Hz mains pickup
     const hum50 = Math.sin(this.phaseMains50Hz) * 95;
     if (!this.signalQuality.t3) t3 = hum50;
     if (!this.signalQuality.t4) t4 = hum50 * 0.95;
@@ -334,24 +371,31 @@ export class SimulationEngine {
       const envelope = Math.sin(Math.PI * progress);
       this.artifactRemainingFrames--;
 
-      t3 += 185 * envelope;
-      t4 += 195 * envelope;
-      o1 += 75 * envelope;
-      o2 += 80 * envelope;
+      // Asymmetric EOG/EMG potential across temporal vs occipital sites
+      t3 += 195 * envelope;
+      t4 += 205 * envelope;
+      o1 += 35 * envelope;
+      o2 += 40 * envelope;
     }
+
+    const rawChannels = {
+      t3: Number(t3.toFixed(2)),
+      t4: Number(t4.toFixed(2)),
+      o1: Number(o1.toFixed(2)),
+      o2: Number(o2.toFixed(2)),
+    };
+
+    const qualitySnapshot = { ...this.signalQuality };
+    const dsp = this.signalProcessor.processSample(rawChannels, qualitySnapshot);
 
     return {
       timestamp: this.currentTimestamp,
-      rawChannels: {
-        t3: Number(t3.toFixed(2)),
-        t4: Number(t4.toFixed(2)),
-        o1: Number(o1.toFixed(2)),
-        o2: Number(o2.toFixed(2)),
-      },
+      rawChannels,
       concentration: Number(finalConcentration.toFixed(2)),
       relaxation: Number(finalRelaxation.toFixed(2)),
-      signalQuality: { ...this.signalQuality },
+      signalQuality: qualitySnapshot,
       resistanceKOhm: this.computeDryResistance(),
+      spectrum: dsp.spectrum,
       isArtifact,
     };
   }

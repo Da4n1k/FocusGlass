@@ -35,6 +35,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::set_click_through,
+            commands::set_overlay_mode,
             commands::get_device_status,
             commands::set_device_source,
             commands::scan_brainbit_devices,

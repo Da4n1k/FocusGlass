@@ -23,6 +23,19 @@ export interface ChannelResistanceKOhm {
   o2: number | null;
 }
 
+export interface SpectralBandPowers {
+  theta: number; // Relative power % (4 - 7 Hz)
+  alpha: number; // Relative power % (8 - 13 Hz)
+  beta: number;  // Relative power % (14 - 30 Hz)
+}
+
+export interface RawBrainBitPacket {
+  timestamp?: number;
+  rawChannels: RawEEGChannels;
+  signalQuality?: ElectrodeSignalQuality;
+  resistanceKOhm?: ChannelResistanceKOhm;
+}
+
 export interface EEGTelemetry {
   timestamp: number;
   rawChannels: RawEEGChannels;
@@ -30,6 +43,7 @@ export interface EEGTelemetry {
   relaxation: number;    // Alpha-based index: 0 - 100%
   signalQuality: ElectrodeSignalQuality;
   resistanceKOhm?: ChannelResistanceKOhm;
+  spectrum?: SpectralBandPowers;
   isArtifact: boolean;   // EMG / EOG artifact flag
 }
 

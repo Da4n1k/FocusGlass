@@ -117,6 +117,20 @@ pub fn scan_brainbit_devices() -> Result<BrainBitScanResponse, String> {
 }
 
 #[tauri::command]
+pub fn set_overlay_mode(window: Window, enabled: bool) -> Result<bool, String> {
+    if enabled {
+        window
+            .maximize()
+            .map_err(|e| format!("Failed to maximize overlay window: {}", e))?;
+    } else {
+        window
+            .unmaximize()
+            .map_err(|e| format!("Failed to restore dashboard window: {}", e))?;
+    }
+    Ok(enabled)
+}
+
+#[tauri::command]
 pub fn toggle_always_on_top(window: Window, enabled: bool) -> Result<bool, String> {
     window
         .set_always_on_top(enabled)

@@ -15,11 +15,12 @@ const CHANNELS = [
 export const EEGOscilloscope: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [timeScale, setTimeScale] = useState<number>(2);
-  const { settings, deviceStatus, isPaused } = useFocusStore();
+  const { settings, deviceStatus, isPaused, telemetry } = useFocusStore();
   const gain = 1.5;
 
   const isSimulator = settings.deviceSource === 'simulator';
   const isStreamActive = isSimulator || deviceStatus.connected;
+  const spectrum = telemetry?.spectrum;
 
   useEffect(() => {
     let animationFrameId: number;
@@ -215,6 +216,25 @@ export const EEGOscilloscope: React.FC = () => {
           </div>
         ))}
       </div>
+
+      {isStreamActive && spectrum && (
+        <div className="mt-2.5 pt-2.5 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px]">
+          <span className="text-slate-400 font-mono">
+            Bipolar PSD (O1-T3 / O2-T4, 50 Hz notch):
+          </span>
+          <div className="flex flex-wrap items-center gap-3 font-mono">
+            <span className="text-amber-300">
+              θ 4-7 Hz: <strong>{spectrum.theta.toFixed(1)}%</strong>
+            </span>
+            <span className="text-violet-300">
+              α 8-13 Hz: <strong>{spectrum.alpha.toFixed(1)}%</strong>
+            </span>
+            <span className="text-cyan-300">
+              β 14-30 Hz: <strong>{spectrum.beta.toFixed(1)}%</strong>
+            </span>
+          </div>
+        </div>
+      )}
     </GlassPanel>
   );
 };

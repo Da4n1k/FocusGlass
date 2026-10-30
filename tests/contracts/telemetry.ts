@@ -4,6 +4,8 @@ export type {
   RawEEGChannels,
   ElectrodeSignalQuality,
   ChannelResistanceKOhm,
+  SpectralBandPowers,
+  RawBrainBitPacket,
   EEGTelemetry,
   FocusGlassSettings,
   BiofeedbackFeedbackState,

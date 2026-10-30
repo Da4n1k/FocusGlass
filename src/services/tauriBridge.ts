@@ -2,6 +2,7 @@ import type {
   BrainBitScanResult,
   DeviceStatus,
   EEGTelemetry,
+  RawBrainBitPacket,
 } from './eegTypes';
 
 class TauriBridge {
@@ -43,6 +44,19 @@ class TauriBridge {
         return await invoke<boolean>('set_click_through', { enabled });
       } catch (err) {
         console.warn('[TauriBridge] Error invoking set_click_through:', err);
+        return false;
+      }
+    }
+    return enabled;
+  }
+
+  public async setOverlayMode(enabled: boolean): Promise<boolean> {
+    if (this.isTauriAvailable()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        return await invoke<boolean>('set_overlay_mode', { enabled });
+      } catch (err) {
+        console.warn('[TauriBridge] Error invoking set_overlay_mode:', err);
         return false;
       }
     }
@@ -105,6 +119,24 @@ class TauriBridge {
       return unlisten;
     } catch (err) {
       console.warn('[TauriBridge] Failed to subscribe to brainbit-telemetry:', err);
+      return () => {};
+    }
+  }
+
+  public async onBrainBitRawSignal(
+    handler: (packet: RawBrainBitPacket) => void
+  ): Promise<() => void> {
+    if (!this.isTauriAvailable()) {
+      return () => {};
+    }
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      const unlisten = await listen<RawBrainBitPacket>('brainbit-raw-signal', (event) => {
+        handler(event.payload);
+      });
+      return unlisten;
+    } catch (err) {
+      console.warn('[TauriBridge] Failed to subscribe to brainbit-raw-signal:', err);
       return () => {};
     }
   }
