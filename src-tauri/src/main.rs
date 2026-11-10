@@ -9,7 +9,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 fn main() {
     // Ctrl+Shift+G — аварийный выход из режима click-through и показ окна
     let restore = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyG);
-    let restore_handler = restore.clone();
+    let restore_handler = restore;
 
     tauri::Builder::default()
         .manage(commands::DeviceManagerState::default())

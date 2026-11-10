@@ -16,6 +16,10 @@
 }
 
 :root {
+  --dashboard-bg: #0b0f19;
+  --dashboard-ambient-cyan: rgba(0, 210, 255, 0.09);
+  --dashboard-ambient-violet: rgba(139, 92, 246, 0.08);
+  --dashboard-ambient-orange: rgba(255, 102, 0, 0.06);
   --glass-bg-primary: rgba(11, 15, 25, 0.75);
   --glass-bg-card: rgba(26, 34, 53, 0.55);
   --glass-border: rgba(255, 255, 255, 0.12);
@@ -23,6 +27,16 @@
   --glass-specular-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.25);
   --glass-drop-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.75);
   --glass-blur-filter: blur(24px) saturate(190%) contrast(105%);
+}
+
+/* Opaque dashboard foundation; never applied to the desktop HUD/overlay.
+   Glass cards refract this controlled backdrop rather than arbitrary windows. */
+.dashboard-surface {
+  background-color: var(--dashboard-bg);
+  background-image:
+    radial-gradient(ellipse at 8% 0%, var(--dashboard-ambient-cyan), transparent 50%),
+    radial-gradient(ellipse at 95% 35%, var(--dashboard-ambient-violet), transparent 55%),
+    radial-gradient(ellipse at 35% 100%, var(--dashboard-ambient-orange), transparent 50%);
 }
 
 /* Custom Liquid Glass utilities */

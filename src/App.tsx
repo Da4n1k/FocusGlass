@@ -59,7 +59,11 @@ export const App: React.FC = () => {
     : 0;
 
   return (
-    <div className="min-h-screen w-full relative flex flex-col font-sans overflow-x-hidden">
+    <div
+      className={`min-h-screen w-full relative flex flex-col font-sans overflow-x-hidden ${
+        viewMode === 'dashboard' ? 'dashboard-surface' : ''
+      }`}
+    >
       {/* Background Ambient Biofeedback Screen Overlay */}
       <BiofeedbackOverlay />
 
