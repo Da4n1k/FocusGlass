@@ -36,7 +36,13 @@ npm install
 npm run dev
 
 # Десктопный режим Tauri (требуется установленный Rust)
-npm run tauri dev
+npm run desktop:dev
+
+# Сборка для текущей ОС (Windows: NSIS; Linux: DEB / AppImage)
+npm run desktop:build
+
+# Только нативный бинарник, без установщика
+npm run desktop:build:binary
 
 # Проверка типов и сборка фронтенда
 npm run build
@@ -44,5 +50,9 @@ npm run build
 # Прогон автотестов (Node 20+)
 npm test
 ```
+
+Платформенный конфиг Tauri выбирается автоматически, отдельные ветки для ОС
+не нужны. Зависимости и ограничения Linux: [docs/LINUX_BUILD.md](docs/LINUX_BUILD.md).
+Сборка Windows выполняется на Windows: [docs/WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md).
 
 Изображения устройства взяты с официального сайта [brainbit.com](https://brainbit.com).

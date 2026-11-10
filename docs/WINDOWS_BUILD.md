@@ -44,4 +44,8 @@ powershell -ExecutionPolicy Bypass -File C:\src\FocusGlass\scripts\windows\build
 
 Скрипт [`scripts/windows/build.ps1`](../scripts/windows/build.ps1) делает `git pull --ff-only`, `npm ci`, `npx tauri build` и копирует `.exe` и установщик в `C:\FocusGlassApp`. На любой ошибке падает с ненулевым кодом, в конце успешной сборки печатает `BUILD_OK`. Флаг `-NoPull` — собрать без обновления репы.
 
+Tauri автоматически подхватывает `src-tauri/tauri.windows.conf.json`: цель NSIS
+и режим установки `perMachine` сохранены. Скрипт менять не нужно. Linux-сборка
+использует отдельный платформенный конфиг, см. [LINUX_BUILD.md](LINUX_BUILD.md).
+
 Первая сборка Rust идёт около 5 минут (проверено 30.10: 4 мин на компиляцию + установщик NSIS 2,7 МБ), повторные — быстрее (кеш в `src-tauri\target`).
