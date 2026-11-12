@@ -55,6 +55,8 @@ export interface FocusGlassSettings {
   dimmingMaxOpacity: number;     // Maximum screen dimming opacity [0.05, 0.95] (default: 0.70)
   blurRadius: number;            // Maximum vignette blur [0, 32]px (default: 16)
   audioFeedbackEnabled: boolean; // Filtered pink-noise biofeedback modulation
+  audioVolume: number;           // Master volume of audio feedback [0.0, 1.0] (default: 1.0)
+  invertReaction: boolean;       // Dim when the metric rises ABOVE the threshold instead of below it
   glassOpacity: number;          // UI panel translucency [0.1, 1.0] (default: 0.85)
 }
 
@@ -97,6 +99,14 @@ export interface BrainBitScanResult {
   sdkAvailable: boolean;
   devices: DiscoveredBrainBitDevice[];
   message: string;
+}
+
+/** What the native side managed to create for the screen-dimming overlay. */
+export interface OverlayInfo {
+  /** Number of overlay windows (one per monitor); 0 means the in-page fallback must be used. */
+  count: number;
+  /** Whether the display server composites windows (required for real transparency). */
+  composited: boolean;
 }
 
 export interface SessionStatistics {
