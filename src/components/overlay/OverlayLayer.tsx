@@ -12,19 +12,31 @@ interface OverlayLayerProps {
   opacity: number;
   blurPx: number;
   cue: OverlayCue;
+  /**
+   * True inside the native, transparent overlay window. There `backdrop-filter` has nothing to
+   * blur (it cannot reach the desktop behind the window) and WebKit paints opaque black
+   * rectangles instead, so it is not used.
+   */
+  nativeWindow?: boolean;
 }
 
 /** Pure presentation of the dimming layer; shared by the in-page overlay and the overlay window. */
-export const OverlayLayer: React.FC<OverlayLayerProps> = ({ opacity, blurPx, cue }) => {
+export const OverlayLayer: React.FC<OverlayLayerProps> = ({
+  opacity,
+  blurPx,
+  cue,
+  nativeWindow = false,
+}) => {
   const { isConcentration, smoothedMetric, threshold } = cue;
+  const blurry = !nativeWindow && blurPx > 0;
 
   return (
     <div
       className="fixed inset-0 pointer-events-none z-40 transition-all duration-500 ease-out flex flex-col items-center justify-center overflow-hidden"
       style={{
         backgroundColor: `rgba(6, 9, 18, ${opacity})`,
-        backdropFilter: blurPx > 0 ? `blur(${blurPx}px)` : 'none',
-        WebkitBackdropFilter: blurPx > 0 ? `blur(${blurPx}px)` : 'none',
+        backdropFilter: blurry ? `blur(${blurPx}px)` : 'none',
+        WebkitBackdropFilter: blurry ? `blur(${blurPx}px)` : 'none',
       }}
     >
       {/* Peripheral Vignette Gradient */}
@@ -39,7 +51,11 @@ export const OverlayLayer: React.FC<OverlayLayerProps> = ({ opacity, blurPx, cue
 
       {/* Gentle Biofeedback Cue (appears when deeply dimmed) */}
       {opacity > 0.35 && (
-        <div className="relative z-10 flex flex-col items-center gap-2 p-6 rounded-3xl bg-slate-950/60 border border-white/10 backdrop-blur-xl shadow-2xl animate-in fade-in zoom-in-95 duration-500 max-w-sm text-center">
+        <div
+          className={`relative z-10 flex flex-col items-center gap-2 p-6 rounded-3xl border border-white/10 shadow-2xl animate-in fade-in zoom-in-95 duration-500 max-w-sm text-center ${
+            nativeWindow ? 'bg-slate-950/85' : 'bg-slate-950/60 backdrop-blur-xl'
+          }`}
+        >
           <div className="w-12 h-12 rounded-2xl bg-orange-500/20 border border-orange-500/30 flex items-center justify-center text-[#FF6600] shadow-[0_0_20px_rgba(255,102,0,0.3)]">
             {isConcentration ? (
               <Eye className="w-6 h-6 animate-pulse" />

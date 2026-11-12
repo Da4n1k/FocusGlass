@@ -40,6 +40,7 @@ export const OverlayApp: React.FC = () => {
     <OverlayLayer
       opacity={opacity}
       blurPx={blurPx}
+      nativeWindow
       cue={{
         isConcentration: snapshot.mode === 'concentration',
         smoothedMetric: snapshot.feedback.smoothedMetric,
