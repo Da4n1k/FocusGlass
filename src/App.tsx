@@ -34,6 +34,7 @@ export const App: React.FC = () => {
     deviceStatus,
     telemetry,
     isPaused,
+    overlayWindowCount,
   } = useFocusStore();
 
   // Ctrl+Shift+G (глобальный хоткей в Rust) выключает click-through — синхронизируем состояние
@@ -64,8 +65,9 @@ export const App: React.FC = () => {
         viewMode === 'dashboard' ? 'dashboard-surface' : ''
       }`}
     >
-      {/* Background Ambient Biofeedback Screen Overlay */}
-      <BiofeedbackOverlay />
+      {/* In-page dimming only when no native overlay windows cover the screens, and never inside
+          the small floating-HUD window, where it would draw its cue card over the HUD itself */}
+      {overlayWindowCount === 0 && viewMode !== 'hud' && <BiofeedbackOverlay />}
 
       {/* Floating HUD View (Minimalist "Шкала-столбик" Over Active Desktop) */}
       {viewMode === 'hud' ? (
