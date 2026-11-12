@@ -185,9 +185,61 @@ pub fn anchor_right_edge(x: i32, old_width: u32, new_width: u32) -> i32 {
     x + old_width as i32 - new_width as i32
 }
 
-/// Geometry of the dashboard window, remembered while the window is shrunk to the HUD.
+/// Keeps `rect` fully inside `monitor`; when it is larger than the monitor, the monitor's
+/// top-left corner wins.
+pub fn clamp_into(rect: Rect, monitor: Rect) -> Rect {
+    let max_x = monitor.x + monitor.width as i32 - rect.width as i32;
+    let max_y = monitor.y + monitor.height as i32 - rect.height as i32;
+    Rect {
+        x: rect.x.min(max_x).max(monitor.x),
+        y: rect.y.min(max_y).max(monitor.y),
+        ..rect
+    }
+}
+
+/// Geometry of the HUD after it is resized to `width` x `height`, its right edge staying put.
+///
+/// `tracked` is what we last asked the window to be; `actual` is what the toolkit reports. The
+/// report lags behind a resize that was just requested, so it is trusted only once the window
+/// has reached the tracked size, and a different position then means the user dragged it.
+/// The result is clamped to the monitor so a bad read can never push the HUD off screen.
+pub fn plan_fit(tracked: Rect, actual: Rect, width: u32, height: u32, monitor: Rect) -> Rect {
+    let base = if actual.width == tracked.width && actual.height == tracked.height {
+        actual
+    } else {
+        tracked
+    };
+    clamp_into(
+        Rect {
+            x: anchor_right_edge(base.x, base.width, width),
+            y: base.y,
+            width,
+            height,
+        },
+        monitor,
+    )
+}
+
+fn monitor_rect(monitor: &tauri::Monitor) -> Rect {
+    Rect {
+        x: monitor.position().x,
+        y: monitor.position().y,
+        width: monitor.size().width,
+        height: monitor.size().height,
+    }
+}
+
+/// Window geometry remembered while the window is shrunk to the floating HUD.
 #[derive(Default)]
-pub struct HudRestoreState(pub Mutex<Option<Rect>>);
+pub struct HudGeometry {
+    /// The dashboard's geometry, restored when leaving HUD mode.
+    pub dashboard: Option<Rect>,
+    /// The geometry we last requested for the HUD; `Some` exactly while in HUD mode.
+    pub hud: Option<Rect>,
+}
+
+#[derive(Default)]
+pub struct HudRestoreState(pub Mutex<HudGeometry>);
 
 fn apply_geometry(window: &Window, rect: Rect) -> Result<(), AppError> {
     window
@@ -207,7 +259,7 @@ pub fn set_overlay_mode(
     restore: State<'_, HudRestoreState>,
     enabled: bool,
 ) -> Result<bool, AppError> {
-    let mut saved = restore
+    let mut geometry = restore
         .0
         .lock()
         .map_err(|_| AppError::StateLockPoisoned("HUD"))?;
@@ -216,14 +268,14 @@ pub fn set_overlay_mode(
         // A maximized window ignores resizing.
         let _ = window.unmaximize();
 
-        if saved.is_none() {
+        if geometry.dashboard.is_none() {
             let position = window
                 .outer_position()
                 .map_err(|e| AppError::window("read window position", e))?;
             let size = window
                 .outer_size()
                 .map_err(|e| AppError::window("read window size", e))?;
-            *saved = Some(Rect {
+            geometry.dashboard = Some(Rect {
                 x: position.x,
                 y: position.y,
                 width: size.width,
@@ -238,12 +290,19 @@ pub fn set_overlay_mode(
             .current_monitor()
             .map_err(|e| AppError::window("find current monitor", e))?;
         let placement = match monitor {
-            Some(m) => hud_placement(m.position().x, m.position().y, m.size().width, scale),
+            Some(m) => clamp_into(
+                hud_placement(m.position().x, m.position().y, m.size().width, scale),
+                monitor_rect(&m),
+            ),
             None => hud_placement(0, 0, 1920, scale),
         };
         apply_geometry(&window, placement)?;
-    } else if let Some(previous) = saved.take() {
-        apply_geometry(&window, previous)?;
+        geometry.hud = Some(placement);
+    } else {
+        geometry.hud = None;
+        if let Some(previous) = geometry.dashboard.take() {
+            apply_geometry(&window, previous)?;
+        }
     }
     Ok(enabled)
 }
@@ -257,35 +316,45 @@ pub fn fit_hud_window(
     width: u32,
     height: u32,
 ) -> Result<bool, AppError> {
-    let in_hud = restore
+    let mut geometry = restore
         .0
         .lock()
-        .map_err(|_| AppError::StateLockPoisoned("HUD"))?
-        .is_some();
-    if !in_hud {
+        .map_err(|_| AppError::StateLockPoisoned("HUD"))?;
+    let Some(tracked) = geometry.hud else {
         return Ok(false);
-    }
+    };
 
     let (width, height) = clamp_hud_size(width, height);
+    if tracked.width == width && tracked.height == height {
+        return Ok(true);
+    }
+
     let position = window
         .outer_position()
         .map_err(|e| AppError::window("read window position", e))?;
     let size = window
         .outer_size()
         .map_err(|e| AppError::window("read window size", e))?;
-    if size.width == width && size.height == height {
-        return Ok(true);
-    }
+    let actual = Rect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    };
+    let monitor = window
+        .current_monitor()
+        .map_err(|e| AppError::window("find current monitor", e))?
+        .map(|m| monitor_rect(&m))
+        .unwrap_or(Rect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        });
 
-    window
-        .set_size(PhysicalSize::new(width, height))
-        .map_err(|e| AppError::window("resize window", e))?;
-    window
-        .set_position(PhysicalPosition::new(
-            anchor_right_edge(position.x, size.width, width),
-            position.y,
-        ))
-        .map_err(|e| AppError::window("move window", e))?;
+    let next = plan_fit(tracked, actual, width, height, monitor);
+    apply_geometry(&window, next)?;
+    geometry.hud = Some(next);
     Ok(true)
 }
 
@@ -402,6 +471,67 @@ mod tests {
         assert_eq!(x + 450, 1528 + 380);
         assert_eq!(anchor_right_edge(1000, 500, 300) + 300, 1500);
         assert_eq!(anchor_right_edge(1000, 400, 400), 1000);
+    }
+
+    fn rect(x: i32, y: i32, width: u32, height: u32) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    const SCREEN: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 2560,
+        height: 1600,
+    };
+
+    #[test]
+    fn clamp_into_keeps_a_window_on_the_monitor() {
+        assert_eq!(clamp_into(rect(2436, 12, 360, 269), SCREEN), rect(2200, 12, 360, 269));
+        assert_eq!(clamp_into(rect(-50, -9, 360, 269), SCREEN), rect(0, 0, 360, 269));
+        assert_eq!(clamp_into(rect(100, 1500, 360, 269), SCREEN), rect(100, 1331, 360, 269));
+        // Already inside: untouched. Larger than the monitor: the top-left corner wins.
+        assert_eq!(clamp_into(rect(100, 100, 360, 269), SCREEN), rect(100, 100, 360, 269));
+        assert_eq!(clamp_into(rect(500, 500, 3000, 2000), SCREEN), rect(0, 0, 3000, 2000));
+    }
+
+    #[test]
+    fn fitting_keeps_the_right_edge_where_it_was_requested() {
+        let tracked = rect(2168, 12, 380, 300);
+        // The toolkit already reports the requested geometry.
+        let next = plan_fit(tracked, tracked, 360, 269, SCREEN);
+        assert_eq!(next, rect(2188, 12, 360, 269));
+        assert_eq!(next.x + 360, 2168 + 380);
+    }
+
+    #[test]
+    fn a_stale_report_of_the_old_dashboard_geometry_is_ignored() {
+        // Regression: reading the not-yet-updated window used to shift the HUD off screen.
+        let tracked = rect(2168, 12, 380, 300);
+        let stale = rect(660, 390, 1240, 820);
+        let next = plan_fit(tracked, stale, 360, 269, SCREEN);
+        assert_eq!(next, rect(2188, 12, 360, 269));
+    }
+
+    #[test]
+    fn a_drag_is_adopted_once_the_window_has_the_requested_size() {
+        let tracked = rect(2168, 12, 380, 300);
+        let dragged = rect(1000, 400, 380, 300);
+        let next = plan_fit(tracked, dragged, 450, 329, SCREEN);
+        assert_eq!(next, rect(930, 400, 450, 329));
+        assert_eq!(next.x + 450, 1000 + 380, "right edge of the dragged window is kept");
+    }
+
+    #[test]
+    fn fitting_never_leaves_the_monitor_even_with_a_bad_report() {
+        let tracked = rect(2400, 12, 380, 300); // already partly off the screen
+        let next = plan_fit(tracked, tracked, 360, 269, SCREEN);
+        assert!(next.x >= 0 && next.x + next.width as i32 <= 2560);
+        assert!(next.y >= 0 && next.y + next.height as i32 <= 1600);
     }
 
     #[test]
