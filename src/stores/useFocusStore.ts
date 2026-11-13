@@ -9,6 +9,9 @@ import type {
   PresetState,
   CalibrationResult,
 } from '../services/eegTypes';
+import type { EEGRecording } from '../services/eegRecording';
+import { parseEEGRecording } from '../services/eegRecording';
+import { RecordingPlayback } from '../services/recordingPlayback';
 import { BiofeedbackEngine, DEFAULT_SETTINGS } from '../services/biofeedbackEngine';
 import { simulationEngine } from '../services/simulationEngine';
 import { audioFeedback } from '../services/audioFeedback';
@@ -16,6 +19,26 @@ import { tauriBridge } from '../services/tauriBridge';
 
 const SETTINGS_STORAGE_KEY = 'focusglass.settings.v1';
 const SESSIONS_STORAGE_KEY = 'focusglass.sessions.v1';
+const CALIBRATION_STORAGE_KEY = 'focusglass.calibration.v1';
+
+function loadPersistedCalibration(): CalibrationResult | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CALIBRATION_STORAGE_KEY) ?? 'null') as CalibrationResult | null;
+    if (!parsed || !Number.isFinite(parsed.baselineFocus) || !Number.isFinite(parsed.baselineRelaxation) ||
+      !Number.isFinite(parsed.variabilityFocus) || !Number.isFinite(parsed.variabilityRelaxation) ||
+      !Number.isFinite(parsed.recommendedThreshold) || (parsed.sampleCount ?? 0) <= 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function savePersistedCalibration(calibration: CalibrationResult): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try { window.localStorage.setItem(CALIBRATION_STORAGE_KEY, JSON.stringify(calibration)); }
+  catch { /* Keep the active in-memory baseline if browser storage is unavailable. */ }
+}
 
 function loadPersistedSettings(): FocusGlassSettings {
   if (typeof window === 'undefined' || !window.localStorage) {
@@ -114,12 +137,41 @@ interface FocusStoreState {
   startCalibration: (durationSeconds?: 10 | 30) => void;
   cancelCalibration: () => void;
   applyCalibration: () => void;
+  activeCalibration: CalibrationResult | null;
+
+  // Prerecorded Neurotech/BrainBit stream playback
+  recording: EEGRecording | null;
+  recordingStatus: 'empty' | 'ready' | 'playing' | 'paused' | 'ended';
+  recordingProgress: number;
+  recordingSpeed: number;
+  recordingError: string | null;
+  loadRecording: (text: string, name: string) => void;
+  playRecording: () => void;
+  pauseRecording: () => void;
+  stopRecording: () => void;
+  seekRecording: (progress: number) => void;
+  setRecordingSpeed: (speed: number) => void;
 }
 
 export const useFocusStore = create<FocusStoreState>((set, get) => {
   const initialSettings = loadPersistedSettings();
+  const playback = new RecordingPlayback();
+  const storedCalibration = loadPersistedCalibration();
+  let simulatorWasPausedBeforePlayback: boolean | null = null;
   let calibrationFrames: EEGTelemetry[] = [];
   let calibrationTimer: ReturnType<typeof setInterval> | null = null;
+
+  if (storedCalibration) simulationEngine.setPersonalCalibration(storedCalibration);
+
+  const restoreSimulatorAfterPlayback = () => {
+    simulationEngine.setRecordingPlaybackActive(false);
+    if (simulatorWasPausedBeforePlayback !== null) {
+      if (simulationEngine.getIsPaused() !== simulatorWasPausedBeforePlayback) {
+        simulationEngine.togglePause();
+      }
+      simulatorWasPausedBeforePlayback = null;
+    }
+  };
 
   simulationEngine.subscribe((telemetry, feedbackState, sessionStats) => {
     const state = get();
@@ -168,6 +220,10 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     updateSettings: (newSettings) => {
       const current = get().settings;
+      if (newSettings.deviceSource && newSettings.deviceSource !== current.deviceSource &&
+        (get().recordingStatus === 'playing' || get().recordingStatus === 'paused')) {
+        get().stopRecording();
+      }
       simulationEngine.updateSettings(newSettings);
       const updated = simulationEngine.getSettings();
       savePersistedSettings(updated);
@@ -383,7 +439,8 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     setCalibrationDuration: (seconds) => set({ calibrationDurationSeconds: seconds }),
     calibrationProgress: 0,
     calibrationRemainingSeconds: 0,
-    calibrationResult: null,
+    calibrationResult: storedCalibration,
+    activeCalibration: storedCalibration,
 
     startCalibration: (durationOverride) => {
       const state = get();
@@ -456,9 +513,94 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     applyCalibration: () => {
       const { calibrationResult, updateSettings } = get();
-      if (calibrationResult && (calibrationResult.sampleCount ?? 1) > 0) {
+      if (calibrationResult && (calibrationResult.sampleCount ?? 0) >= 20 && calibrationResult.confidence > 0) {
+        simulationEngine.setPersonalCalibration(calibrationResult);
+        savePersistedCalibration(calibrationResult);
         updateSettings({ threshold: calibrationResult.recommendedThreshold });
+        set({ activeCalibration: calibrationResult });
       }
+    },
+
+    recording: null,
+    recordingStatus: 'empty',
+    recordingProgress: 0,
+    recordingSpeed: 1,
+    recordingError: null,
+    loadRecording: (text, name) => {
+      try {
+        if (get().recordingStatus === 'playing' || get().recordingStatus === 'paused') get().stopRecording();
+        const recording = parseEEGRecording(text, name);
+        playback.load(recording);
+        set({ recording, recordingStatus: 'ready', recordingProgress: 0, recordingError: null });
+      } catch (error) {
+        playback.stop();
+        restoreSimulatorAfterPlayback();
+        set({
+          recording: null,
+          recordingStatus: 'empty',
+          recordingProgress: 0,
+          recordingError: error instanceof Error ? error.message : 'Could not open the recording.',
+        });
+      }
+    },
+    playRecording: () => {
+      const state = get();
+      if (!state.recording) return;
+      if (state.settings.deviceSource !== 'simulator') {
+        set({ recordingError: 'Select Simulator in the BrainBit & Simulator tab to play a recording.' });
+        return;
+      }
+      if (simulatorWasPausedBeforePlayback === null) {
+        simulatorWasPausedBeforePlayback = simulationEngine.getIsPaused();
+        if (!simulatorWasPausedBeforePlayback) simulationEngine.togglePause();
+      }
+      if (state.recordingStatus !== 'paused') {
+        simulationEngine.resetRecordedSignalPipeline();
+      }
+      simulationEngine.setRecordingPlaybackActive(true);
+      set({ recordingStatus: 'playing', recordingError: null });
+      const started = playback.play(
+        state.recordingSpeed,
+        (frames) => { simulationEngine.ingestRecordedFrames(frames); },
+        (progress) => { set({ recordingProgress: progress }); },
+        () => {
+          set({ recordingStatus: 'ended', recordingProgress: 1 });
+          restoreSimulatorAfterPlayback();
+        }
+      );
+      if (!started) {
+        restoreSimulatorAfterPlayback();
+        set({ recordingStatus: 'ready' });
+      }
+    },
+    pauseRecording: () => {
+      playback.pause();
+      if (get().recordingStatus === 'playing') set({ recordingStatus: 'paused' });
+    },
+    stopRecording: () => {
+      playback.stop();
+      simulationEngine.resetRecordedSignalPipeline();
+      restoreSimulatorAfterPlayback();
+      set({
+        recordingStatus: get().recording ? 'ready' : 'empty',
+        recordingProgress: 0,
+        recordingError: null,
+      });
+    },
+    seekRecording: (progress) => {
+      const wasPlaying = get().recordingStatus === 'playing';
+      if (wasPlaying) playback.pause();
+      const nextProgress = playback.seek(progress);
+      simulationEngine.resetRecordedSignalPipeline();
+      set({ recordingProgress: nextProgress, ...(wasPlaying ? { recordingStatus: 'paused' as const } : {}) });
+      if (wasPlaying) get().playRecording();
+    },
+    setRecordingSpeed: (speed) => {
+      const wasPlaying = get().recordingStatus === 'playing';
+      const boundedSpeed = Math.max(0.25, Math.min(4, speed));
+      if (wasPlaying) playback.pause();
+      set({ recordingSpeed: boundedSpeed });
+      if (wasPlaying) get().playRecording();
     },
   };
 });

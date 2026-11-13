@@ -7,6 +7,7 @@ export const BiofeedbackOverlay: React.FC = () => {
 
   const { overlayOpacity, blurRadius, isDimmingActive, isContactOk, smoothedMetric } =
     feedbackState;
+  const effectiveThreshold = feedbackState.effectiveThreshold ?? settings.threshold;
   const isConcentration = settings.mode === 'concentration';
   const isStreamActive = settings.deviceSource === 'simulator' || deviceStatus.connected;
 
@@ -49,8 +50,8 @@ export const BiofeedbackOverlay: React.FC = () => {
             </h4>
             <p className="text-xs text-slate-300 mt-1">
               {isConcentration
-                ? `Focus dropped to ${Math.round(smoothedMetric)}% (target ≥ ${settings.threshold}%). Return attention to your active task.`
-                : `Calm index dropped to ${Math.round(smoothedMetric)}% (target ≥ ${settings.threshold}%). Slow down your breathing to restore Alpha rhythm.`}
+                ? `Focus dropped to ${Math.round(smoothedMetric)}% (target ≥ ${Math.round(effectiveThreshold)}%). Return attention to your active task.`
+                : `Calm index dropped to ${Math.round(smoothedMetric)}% (target ≥ ${Math.round(effectiveThreshold)}%). Slow down your breathing to restore Alpha rhythm.`}
             </p>
           </div>
           <div className="flex items-center gap-2 text-[11px] text-orange-400/90 font-medium mt-1">

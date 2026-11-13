@@ -15,6 +15,7 @@ const testFiles = [
   resolve('tests/tier1_features/electrodeQuality.test.ts'),
   resolve('tests/tier1_features/liveEngineIntegration.test.ts'),
   resolve('tests/tier1_features/eegSignalProcessor.test.ts'),
+  resolve('tests/tier1_features/eegRecording.test.ts'),
 
   // Tier 2: Boundary & Corner Cases
   resolve('tests/tier2_boundaries/extremeLimits.test.ts'),

@@ -33,7 +33,7 @@ export const FocusBarHUD: React.FC = () => {
   const isStreamActive = isSimulator || deviceStatus.connected;
 
   const score = feedbackState.smoothedMetric;
-  const threshold = settings.threshold;
+  const threshold = feedbackState.effectiveThreshold ?? settings.threshold;
   const isBelowThreshold = isStreamActive && feedbackState.isContactOk && score < threshold;
 
   return (
