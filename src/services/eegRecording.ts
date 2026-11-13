@@ -30,7 +30,41 @@ const CHANNELS = ['t3', 't4', 'o1', 'o2'] as const;
 type Channel = (typeof CHANNELS)[number];
 
 function normalizeHeader(value: string): string {
-  return value.toLowerCase().replace(/[µμ]/g, 'u').replace(/[^a-z0-9]/g, '');
+  return value.toLowerCase()
+    .replace(/[µμ]/g, 'u')
+    .replace(/[ΩΩω]/g, 'ohm')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+type ResistanceUnit = 'ohm' | 'kohm';
+
+function parseResistanceUnit(value: unknown): ResistanceUnit | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase().replace(/[ΩΩω]/g, 'ohm').replace(/[^a-z]/g, '');
+  if (['ohm', 'ohms'].includes(normalized)) return 'ohm';
+  if (['kohm', 'kohms', 'kilohm', 'kilohms'].includes(normalized)) return 'kohm';
+  return null;
+}
+
+function resolveResistanceUnit(value: unknown, fallback: ResistanceUnit, context: string): ResistanceUnit {
+  if (value === undefined || value === null || String(value).trim() === '') return fallback;
+  const parsed = parseResistanceUnit(value);
+  if (!parsed) {
+    throw new EEGRecordingParseError(
+      `Unsupported resistance unit "${String(value)}" in ${context}; use Ohm or kOhm.`
+    );
+  }
+  return parsed;
+}
+
+function resistanceUnitForField(field: string, fallback: ResistanceUnit): ResistanceUnit {
+  const normalized = normalizeHeader(field);
+  if (normalized.includes('mohm') || normalized.includes('milliohm') || normalized.includes('megaohm')) {
+    throw new EEGRecordingParseError(`Unsupported resistance unit in column "${field}"; use Ohm or kOhm.`);
+  }
+  if (normalized.includes('kohm') || normalized.includes('kilohm')) return 'kohm';
+  if (normalized.includes('ohm')) return 'ohm';
+  return fallback;
 }
 
 function numeric(value: unknown): number | null {
@@ -72,7 +106,8 @@ function timestampOf(value: unknown, fallback: number): number {
 function parseFrame(
   record: Record<string, unknown>,
   index: number,
-  defaultTimestamp: number
+  defaultTimestamp: number,
+  defaultResistanceUnit: ResistanceUnit = 'kohm'
 ): EEGRecordingFrame {
   const rawChannels = {} as RawEEGChannels;
   for (const channel of CHANNELS) {
@@ -98,11 +133,18 @@ function parseFrame(
       key === `contact${channel}` || key === `${channel}contactok`
     );
     const resistanceField = findKey(record, (key) =>
-      key === `${channel}kohm` || key === `${channel}k` || key === `${channel}resistance` ||
-      key === `resistance${channel}` || key === `${channel}impedance` ||
-      (key.includes(channel) && (key.includes('kohm') || key.includes('resistance') || key.includes('impedance')))
+      key === `${channel}kohm` || key === `${channel}k` || key === `${channel}ohm` ||
+      key === `${channel}resistance` || key === `resistance${channel}` ||
+      key === `${channel}impedance` || key === `impedance${channel}` ||
+      (key.includes(channel) && (key.includes('ohm') || key.includes('resistance') || key.includes('impedance')))
     );
-    const resistanceValue = resistanceField ? numeric(record[resistanceField]) : null;
+    const rawResistanceValue = resistanceField ? numeric(record[resistanceField]) : null;
+    const resistanceUnit = resistanceField
+      ? resistanceUnitForField(resistanceField, defaultResistanceUnit)
+      : defaultResistanceUnit;
+    const resistanceValue = rawResistanceValue === null
+      ? null
+      : resistanceUnit === 'ohm' ? rawResistanceValue / 1000 : rawResistanceValue;
     if (resistanceField) hasResistance = true;
     if (qualityField) hasQuality = true;
     resistance[channel] = resistanceValue;
@@ -213,6 +255,11 @@ export function parseEEGRecording(text: string, name = 'EEG recording'): EEGReco
       throw new EEGRecordingParseError('JSON must contain a samples, frames, data or records array.');
     }
     declaredRate = root?.sampleRateHz ?? root?.samplingRateHz ?? root?.sample_rate_hz ?? root?.sampling_rate;
+    const declaredResistanceUnit = resolveResistanceUnit(
+      root?.resistanceUnit ?? root?.resistance_unit ?? root?.impedanceUnit ?? root?.impedance_unit,
+      'kohm',
+      'JSON metadata'
+    );
     frames = samples.map((sample, index) => {
       if (!sample || typeof sample !== 'object' || Array.isArray(sample)) {
         throw new EEGRecordingParseError(`JSON row ${index + 1} must be an object.`);
@@ -231,7 +278,12 @@ export function parseEEGRecording(text: string, name = 'EEG recording'): EEGReco
       if (nestedResistance && typeof nestedResistance === 'object') {
         for (const channel of CHANNELS) source[`${channel}Resistance`] = (nestedResistance as Record<string, unknown>)[channel];
       }
-      return parseFrame(source, index, index * 4);
+      const rowResistanceUnit = resolveResistanceUnit(
+        row.resistanceUnit ?? row.resistance_unit ?? row.impedanceUnit ?? row.impedance_unit,
+        declaredResistanceUnit,
+        `JSON row ${index + 1}`
+      );
+      return parseFrame(source, index, index * 4, rowResistanceUnit);
     });
   } else {
     format = 'csv';
@@ -241,9 +293,22 @@ export function parseEEGRecording(text: string, name = 'EEG recording'): EEGReco
     if (!CHANNELS.every((channel) => channelKey(headerRecord, channel))) {
       throw new EEGRecordingParseError('CSV header must include T3, T4, O1 and O2 (values in µV; an mV suffix is supported).');
     }
+    const declaredResistanceUnitMatch = trimmed.match(
+      /(?:resistance|impedance)[_ ]?unit\s*[:=]\s*([a-zA-ZµμΩΩω]+)/i
+    );
+    const declaredResistanceUnit = resolveResistanceUnit(
+      declaredResistanceUnitMatch?.[1],
+      'kohm',
+      'CSV metadata'
+    );
     frames = rows.slice(1).map((row, index) => {
       const record = Object.fromEntries(headers.map((header, column) => [header, row[column] ?? '']));
-      return parseFrame(record, index + 1, index * 4);
+      const rowResistanceUnit = resolveResistanceUnit(
+        record.resistanceUnit ?? record.resistance_unit ?? record.impedanceUnit ?? record.impedance_unit,
+        declaredResistanceUnit,
+        `CSV row ${index + 1}`
+      );
+      return parseFrame(record, index + 1, index * 4, rowResistanceUnit);
     });
     const metadata = trimmed.match(/(?:sample[_ ]?rate|sampling[_ ]?rate|частота)[^\d]{0,16}(\d+(?:[.,]\d+)?)/i);
     declaredRate = metadata?.[1]?.replace(',', '.');

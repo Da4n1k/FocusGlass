@@ -27,7 +27,7 @@ The recommended source-space cutoff is the selected baseline minus half its robu
 
 ## Electrode resistance screening
 
-All readings below are kΩ. The limit is intentionally explicit and identical per channel in the application; it is an operational project default, not a manufacturer-certified threshold.
+All readings below are kΩ. The 800 kΩ limit is an operational project default, not a manufacturer-certified threshold or universal BrainBit limit. BrainBit SDK/export units and valid ranges depend on the specific device and SDK version; verify them against the actual source before interpreting contact quality.
 
 | Channel | Position | Maximum usable | Reject |
 | --- | --- | ---: | --- |
@@ -46,10 +46,10 @@ This is a conservative threshold detector, not a validated EOG/EMG classifier: b
 
 ## Prerecorded EEG player
 
-The local player accepts CSV/TSV/TXT with a header containing T3, T4, O1, O2 (µV by default; an `mV` channel suffix is converted to µV) and JSON arrays or objects with `samples`, `frames`, `data` or `records`. Optional timestamps, sample rate, per-channel quality, resistance and artifact flags are accepted. If no sample rate is declared, timestamps are used to infer it; otherwise 250 Hz is assumed. Replays use the production signal processor and biofeedback engine; the simulator is paused while replay is active, and replay cannot be mixed with a Bluetooth stream.
+The local player accepts CSV/TSV/TXT with a header containing T3, T4, O1, O2 (µV by default; an `mV` channel suffix is converted to µV) and JSON arrays or objects with `samples`, `frames`, `data` or `records`. Optional timestamps, sample rate, per-channel quality, resistance and artifact flags are accepted. Resistance fields explicitly labelled `Ω`/`Ohm` are converted to kΩ; `kΩ`/`kOhm` fields are retained as kΩ. A recording-level `resistanceUnit`/`impedanceUnit` (or CSV comment metadata such as `# resistance_unit=Ohm`) applies to unlabelled resistance fields. For backward compatibility, unlabelled fields without metadata are interpreted as kΩ; confirm this assumption for the recording source before use. Unknown explicitly declared resistance units are rejected rather than guessed. `Infinity`, null and other non-finite resistance values are treated as unavailable contact and fail the contact check. If no sample rate is declared, timestamps are used to infer it; otherwise 250 Hz is assumed. Replays use the production signal processor and biofeedback engine; the simulator is paused while replay is active, and replay cannot be mixed with a Bluetooth stream.
 
 Use known clean and artifact-contaminated Neurotech recordings to verify filter and rejection behavior. The parser expects raw channel samples; it does not claim compatibility with proprietary binary/EDF files. Convert those to the documented CSV/JSON layout first.
 
 ## Verification notes
 
-Automated tests cover robust calibration, baseline-zero mapping, electrode resistance boundaries, CSV/JSON parsing, replay timing and artifact flags, alongside the existing signal-processing and app regression suites. Hardware impedance values and Neurotech-specific export variations should still be verified against the actual NeuroSDK/export version before release.
+Automated tests cover robust calibration, baseline-zero mapping, electrode resistance boundaries and unit normalization, CSV/JSON parsing, replay timing and artifact flags, alongside the existing signal-processing and app regression suites. Hardware impedance values and Neurotech-specific export variations should still be verified against the actual NeuroSDK/export version before release.

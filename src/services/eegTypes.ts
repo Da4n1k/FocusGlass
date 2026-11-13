@@ -13,8 +13,9 @@ export interface ElectrodeSignalQuality {
 }
 
 /**
- * Dry-electrode contact resistance in kOhm (BrainBit normal contact: ~100-800 kOhm,
- * upper limit in NeuroSDK2: 2500 kOhm; null represents open circuit / detached sensor).
+ * Electrode contact resistance normalized to kOhm by the data source/parser.
+ * null represents an unavailable or open-circuit reading. This type does not
+ * imply a manufacturer threshold; project screening limits are defined separately.
  */
 export interface ChannelResistanceKOhm {
   t3: number | null;

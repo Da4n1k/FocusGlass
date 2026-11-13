@@ -60,6 +60,48 @@ test('EEG recordings: parses JSON NeuroSDK-style packets with nested channels an
   assert.equal(inferred.frames[1].timestamp, 4, 'Replay timestamps are normalized to milliseconds');
 });
 
+test('EEG recordings: normalizes explicitly labelled resistance units and fails closed on Infinity', () => {
+  const csv = [
+    'timestamp_ms,T3_uV,T4_uV,O1_uV,O2_uV,T3_resistance_Ohm,T4_Resistance_Ω,O1_kOhm,O2_Resistance_kOhm',
+    '0,1,2,3,4,120000,130000,140,150',
+  ].join('\n');
+  const recording = parseEEGRecording(csv);
+  assert.deepEqual(recording.frames[0].resistanceKOhm, { t3: 120, t4: 130, o1: 140, o2: 150 });
+  assert.equal(recording.frames[0].signalQuality?.t3, true);
+
+  const csvMetadata = [
+    '# resistance_unit=Ohm',
+    'T3_uV,T4_uV,O1_uV,O2_uV,T3_resistance,T4_resistance,O1_resistance,O2_resistance',
+    '1,1,1,1,120000,130000,140000,150000',
+  ].join('\n');
+  assert.equal(parseEEGRecording(csvMetadata).frames[0].resistanceKOhm?.t3, 120);
+  assert.throws(
+    () => parseEEGRecording('# resistance_unit=MOhm\nT3,T4,O1,O2\n1,1,1,1'),
+    EEGRecordingParseError,
+    'Unknown explicit units should not silently fall back to kOhm'
+  );
+
+  const json = JSON.stringify({
+    resistanceUnit: 'Ohm',
+    samples: [{
+      channels: { t3: 1, t4: 1, o1: 1, o2: 1 },
+      resistance: { t3: 120000, t4: 130000, o1: 140000, o2: 150000 },
+    }],
+  });
+  assert.deepEqual(parseEEGRecording(json).frames[0].resistanceKOhm, {
+    t3: 120, t4: 130, o1: 140, o2: 150,
+  });
+
+  const openCircuit = parseEEGRecording(JSON.stringify({
+    samples: [{
+      channels: { t3: 1, t4: 1, o1: 1, o2: 1 },
+      resistanceKOhm: { t3: 'Infinity', t4: 100, o1: 100, o2: 100 },
+    }],
+  }));
+  assert.equal(openCircuit.frames[0].resistanceKOhm?.t3, null);
+  assert.equal(openCircuit.frames[0].signalQuality?.t3, false);
+});
+
 test('EEG recordings: converts millivolt columns and rejects missing required channels', () => {
   const csv = 'T3_mV,T4_mV,O1_mV,O2_mV\n0.01,0.02,0.03,0.04';
   const recording = parseEEGRecording(csv);
