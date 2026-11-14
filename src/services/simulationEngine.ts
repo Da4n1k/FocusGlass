@@ -7,6 +7,7 @@ import type {
   ElectrodeSignalQuality,
   ChannelResistanceKOhm,
   RawBrainBitPacket,
+  CalibrationResult,
 } from './eegTypes';
 import { BiofeedbackEngine, DEFAULT_SETTINGS } from './biofeedbackEngine';
 import { EEGSignalProcessor } from './eegSignalProcessor';
@@ -22,6 +23,7 @@ export class SimulationEngine {
   private timerId: ReturnType<typeof setInterval> | null = null;
   private isPaused: boolean = false;
   private currentPreset: PresetState = 'calm_flow';
+  private recordingPlaybackActive: boolean = false;
 
   // Multi-frame physiological artifact burst (~240 ms = 60 samples at 250 Hz)
   private artifactRemainingFrames: number = 0;
@@ -64,7 +66,7 @@ export class SimulationEngine {
         return;
       }
 
-      if (this.settings.deviceSource !== 'simulator') return;
+      if (this.settings.deviceSource !== 'simulator' || this.recordingPlaybackActive) return;
 
       switch (e.key) {
         case '1':
@@ -149,7 +151,11 @@ export class SimulationEngine {
         telemetry.rawChannels,
         telemetry.signalQuality
       );
-      enriched = { ...telemetry, spectrum: snap.spectrum };
+      enriched = {
+        ...telemetry,
+        spectrum: snap.spectrum,
+        isArtifact: telemetry.isArtifact || snap.bothSidesArtifacted,
+      };
     }
 
     const state = this.biofeedback.processTelemetry(enriched);
@@ -177,6 +183,35 @@ export class SimulationEngine {
       resistanceKOhm: packet.resistanceKOhm,
     });
     return this.ingestExternalTelemetry(frame);
+  }
+
+  /** Process every recorded sample while publishing only the newest frame per UI batch. */
+  public ingestRecordedFrames(
+    packets: Array<RawBrainBitPacket & { isArtifact?: boolean }>
+  ): BiofeedbackFeedbackState {
+    let latestState = this.biofeedback.getLastState();
+    for (const packet of packets) {
+      const quality = packet.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
+      const processed = this.signalProcessor.toTelemetryFrame({
+        timestamp: packet.timestamp ?? Date.now(),
+        rawChannels: packet.rawChannels,
+        signalQuality: quality,
+        resistanceKOhm: packet.resistanceKOhm,
+      });
+      const telemetry = packet.isArtifact
+        ? { ...processed, isArtifact: true }
+        : processed;
+      latestState = this.biofeedback.processTelemetry(telemetry);
+      this.latestTelemetry = telemetry;
+      this.rawBatchBuffer.push(telemetry);
+    }
+    if (this.rawBatchBuffer.length > 1000) {
+      this.rawBatchBuffer = this.rawBatchBuffer.slice(-1000);
+    }
+    if (this.latestTelemetry) {
+      this.notify(this.latestTelemetry, latestState, this.biofeedback.getSessionStats());
+    }
+    return latestState;
   }
 
   public updateSettings(newSettings: Partial<FocusGlassSettings>): void {
@@ -265,6 +300,20 @@ export class SimulationEngine {
 
   public getSessionStats(): SessionStatistics {
     return this.biofeedback.getSessionStats();
+  }
+
+  public setPersonalCalibration(calibration: CalibrationResult | null): void {
+    this.biofeedback.setPersonalCalibration(calibration);
+  }
+
+  public setRecordingPlaybackActive(active: boolean): void {
+    this.recordingPlaybackActive = active;
+  }
+
+  public resetRecordedSignalPipeline(): void {
+    this.signalProcessor.reset();
+    this.biofeedback.clearSmoothingWindow();
+    this.rawBatchBuffer = [];
   }
 
   public getSettings(): FocusGlassSettings {

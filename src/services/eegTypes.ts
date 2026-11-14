@@ -13,8 +13,9 @@ export interface ElectrodeSignalQuality {
 }
 
 /**
- * Dry-electrode contact resistance in kOhm (BrainBit normal contact: ~100-800 kOhm,
- * upper limit in NeuroSDK2: 2500 kOhm; null represents open circuit / detached sensor).
+ * Electrode contact resistance normalized to kOhm by the data source/parser.
+ * null represents an unavailable or open-circuit reading. This type does not
+ * imply a manufacturer threshold; project screening limits are defined separately.
  */
 export interface ChannelResistanceKOhm {
   t3: number | null;
@@ -59,8 +60,10 @@ export interface FocusGlassSettings {
 }
 
 export interface BiofeedbackFeedbackState {
-  currentMetric: number;     // Raw active metric (concentration or relaxation)
-  smoothedMetric: number;    // Moving average smoothed value
+  currentMetric: number;     // Active display score (personalized 0–100 when calibrated)
+  smoothedMetric: number;    // Moving average display score
+  effectiveThreshold?: number; // Cutoff mapped into the same scale as currentMetric
+  personalDeviation?: number;  // Signed personal-norm deviation in -100…+100
   deficit: number;           // Deficit below threshold in [0.0, 1.0]
   overlayOpacity: number;    // Screen dimmer opacity [0.0, dimmingMaxOpacity]
   blurRadius: number;        // Screen vignette blur radius in px
@@ -120,10 +123,18 @@ export interface SessionRecord extends SessionStatistics {
 }
 
 export interface CalibrationResult {
+  /** Personal reference in the original Focus/Calm index space (0–100). */
   baselineFocus: number;
   baselineRelaxation: number;
+  /** Robust per-mode spread (1.4826 × MAD), in original index points. */
+  variabilityFocus: number;
+  variabilityRelaxation: number;
+  /** Later-minus-earlier Focus index drift (a fatigue proxy, not a diagnosis). */
+  fatigueDrift: number;
+  /** Absolute raw-index threshold recommended for this user's calibration. */
   recommendedThreshold: number;
   confidence: number;
+  validSampleRatio: number;
   mode?: 'concentration' | 'relaxation';
   sampleCount?: number;
 }

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Target, Zap, Sparkles, Wind, AlertTriangle } from 'lucide-react';
 import { useFocusStore } from '../../stores/useFocusStore';
+import { mapMetricToPersonalScore } from '../../services/biofeedbackEngine';
 import { GlassPanel } from '../glass/GlassPanel';
 import { GlassBadge } from '../glass/GlassBadge';
 import { GlassSlider } from '../glass/GlassSlider';
@@ -13,6 +14,7 @@ export const BentoMetricGrid: React.FC = () => {
     telemetry,
     feedbackState,
     settings,
+    activeCalibration,
     deviceStatus,
     updateSettings,
     activePreset,
@@ -23,13 +25,24 @@ export const BentoMetricGrid: React.FC = () => {
   const isSimulator = settings.deviceSource === 'simulator';
   const isStreamActive = isSimulator || deviceStatus.connected;
 
+  const rawFocusScore = telemetry?.concentration ?? 0;
+  const rawCalmScore = telemetry?.relaxation ?? 0;
   const focusScore = isConcentration
     ? feedbackState.smoothedMetric
-    : telemetry?.concentration ?? 0;
+    : activeCalibration
+      ? mapMetricToPersonalScore(rawFocusScore, activeCalibration.baselineFocus, activeCalibration.variabilityFocus).percentage
+      : rawFocusScore;
   const calmScore = !isConcentration
     ? feedbackState.smoothedMetric
-    : telemetry?.relaxation ?? 0;
-  const threshold = settings.threshold;
+    : activeCalibration
+      ? mapMetricToPersonalScore(rawCalmScore, activeCalibration.baselineRelaxation, activeCalibration.variabilityRelaxation).percentage
+      : rawCalmScore;
+  const focusThreshold = activeCalibration
+    ? mapMetricToPersonalScore(settings.threshold, activeCalibration.baselineFocus, activeCalibration.variabilityFocus).percentage
+    : settings.threshold;
+  const calmThreshold = activeCalibration
+    ? mapMetricToPersonalScore(settings.threshold, activeCalibration.baselineRelaxation, activeCalibration.variabilityRelaxation).percentage
+    : settings.threshold;
 
   return (
     <div className="space-y-4">
@@ -113,14 +126,14 @@ export const BentoMetricGrid: React.FC = () => {
                     {isStreamActive ? `${Math.round(focusScore)}%` : '—'}
                   </span>
                   <span className="text-xs text-slate-400 font-mono">
-                    Target ≥ {threshold}%
+                    Target ≥ {focusThreshold}%
                   </span>
                 </div>
 
                 <div className="h-2.5 w-full bg-slate-900 rounded-full overflow-hidden border border-white/10 p-0.5">
                   <div
                     className={`h-full rounded-full transition-all duration-300 ${
-                      focusScore >= threshold
+                      focusScore >= focusThreshold
                         ? 'bg-gradient-to-r from-orange-500 to-amber-300'
                         : 'bg-gradient-to-r from-red-600 to-orange-500'
                     }`}
@@ -159,7 +172,7 @@ export const BentoMetricGrid: React.FC = () => {
                     {isStreamActive ? `${Math.round(calmScore)}%` : '—'}
                   </span>
                   <span className="text-xs text-slate-400 font-mono">
-                    Target ≥ {threshold}%
+                    Target ≥ {calmThreshold}%
                   </span>
                 </div>
 
@@ -181,14 +194,14 @@ export const BentoMetricGrid: React.FC = () => {
             {/* Quick Interactive Threshold Slider */}
             <div className="mt-4 pt-3 border-t border-white/10">
               <GlassSlider
-                label="Dynamic Biofeedback Target Threshold"
+                label={activeCalibration ? 'Target Cutoff (Source Index)' : 'Dynamic Biofeedback Target Threshold'}
                 value={settings.threshold}
-                min={20}
-                max={90}
+                min={10}
+                max={95}
                 step={5}
                 unit="%"
                 accentColor={isConcentration ? 'orange' : 'violet'}
-                description="When the smoothed active metric falls below this threshold, screen opacity dims proportionally."
+                description={activeCalibration ? 'Stored in the original Focus/Calm index. The applied personal baseline maps this cutoff to the displayed 0–100 score.' : 'When the smoothed active metric falls below this threshold, screen opacity dims proportionally.'}
                 onChange={(val) => updateSettings({ threshold: val })}
               />
             </div>
