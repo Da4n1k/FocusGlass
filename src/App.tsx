@@ -78,7 +78,12 @@ const InPageOverlay: React.FC = () => {
 
   const isSimulator = settings.deviceSource === 'simulator';
   const streamActive = isSimulator || deviceStatus.connected;
-  const canDim = streamActive && feedbackState.isContactOk && feedbackState.isDimmingActive;
+  const isFitCheckActive = !isSimulator && deviceStatus.streamMode === 'resist';
+  const canDim =
+    streamActive &&
+    !isFitCheckActive &&
+    feedbackState.isContactOk &&
+    feedbackState.isDimmingActive;
   const threshold = Math.round(feedbackState.effectiveThreshold ?? settings.threshold);
 
   return (
@@ -211,8 +216,8 @@ export const App: React.FC = () => {
                   Simulator · 250 Hz
                 </GlassBadge>
               ) : isBleConnected ? (
-                <GlassBadge variant="cyan" pulse={true}>
-                  BrainBit BLE · Connected
+                <GlassBadge variant={deviceStatus.streamMode === 'resist' ? 'orange' : 'cyan'} pulse={true}>
+                  {deviceStatus.streamMode === 'resist' ? 'BrainBit BLE · Fit Check' : 'BrainBit BLE · Connected'}
                 </GlassBadge>
               ) : (
                 <GlassBadge variant="red" pulse={false}>
@@ -321,12 +326,14 @@ export const App: React.FC = () => {
               ) : isBleConnected ? (
                 <span className="flex items-center gap-1.5 text-emerald-400 font-mono">
                   <Activity className="w-3 h-3" />
-                  250 Hz BrainBit Stream
+                  {deviceStatus.streamMode === 'resist'
+                    ? 'BrainBit Fit Check (kΩ)'
+                    : '250 Hz BrainBit Stream'}
                 </span>
               ) : (
                 <span className="flex items-center gap-1.5 text-rose-400 font-mono">
                   <Activity className="w-3 h-3" />
-                  BLE Disconnected (NeuroSDK2 pending)
+                  BrainBit BLE Disconnected
                 </span>
               )}
               <span>•</span>

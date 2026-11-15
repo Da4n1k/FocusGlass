@@ -1,5 +1,7 @@
 import type {
+  BrainBitResistUpdate,
   BrainBitScanResult,
+  BrainBitStreamMode,
   DeviceStatus,
   DistractionStatus,
   EEGTelemetry,
@@ -315,19 +317,41 @@ class TauriBridge {
     return this.buildFallbackStatus(source);
   }
 
-  public async scanBrainBitDevices(): Promise<BrainBitScanResult> {
+  public async scanBrainBitDevices(durationMs?: number): Promise<BrainBitScanResult> {
     if (this.isTauri()) {
-      try {
-        return await this.invoke<BrainBitScanResult>('scan_brainbit_devices');
-      } catch (err) {
-        console.warn('[TauriBridge] scan_brainbit_devices failed:', err);
-      }
+      return await this.invoke<BrainBitScanResult>('scan_brainbit_devices', {
+        durationMs: durationMs ?? null,
+      });
     }
     return {
       sdkAvailable: false,
       devices: [],
-      message: 'NeuroSDK2 BLE transport is not linked yet. No physical scan was performed.',
+      message: 'NeuroSDK2 BLE requires the Tauri desktop app.',
     };
+  }
+
+  public async connectBrainBit(
+    address: string,
+    initialMode: BrainBitStreamMode = 'resist'
+  ): Promise<DeviceStatus> {
+    if (!this.isTauri()) {
+      return this.buildFallbackStatus('bluetooth');
+    }
+    return this.invoke<DeviceStatus>('connect_brainbit', { address, initialMode });
+  }
+
+  public async disconnectBrainBit(): Promise<DeviceStatus> {
+    if (!this.isTauri()) {
+      return this.buildFallbackStatus('bluetooth');
+    }
+    return this.invoke<DeviceStatus>('disconnect_brainbit');
+  }
+
+  public async setBrainBitMode(mode: BrainBitStreamMode): Promise<DeviceStatus> {
+    if (!this.isTauri()) {
+      return this.buildFallbackStatus('bluetooth');
+    }
+    return this.invoke<DeviceStatus>('set_brainbit_mode', { mode });
   }
 
   public onBrainBitTelemetry(handler: (packet: EEGTelemetry) => void): Promise<() => void> {
@@ -336,6 +360,18 @@ class TauriBridge {
 
   public onBrainBitRawSignal(handler: (packet: RawBrainBitPacket) => void): Promise<() => void> {
     return this.on<RawBrainBitPacket>('brainbit-raw-signal', handler);
+  }
+
+  public onBrainBitRawBatch(handler: (packets: RawBrainBitPacket[]) => void): Promise<() => void> {
+    return this.on<RawBrainBitPacket[]>('brainbit-raw-batch', handler);
+  }
+
+  public onBrainBitResist(handler: (update: BrainBitResistUpdate) => void): Promise<() => void> {
+    return this.on<BrainBitResistUpdate>('brainbit-resist', handler);
+  }
+
+  public onBrainBitStatus(handler: (status: DeviceStatus) => void): Promise<() => void> {
+    return this.on<DeviceStatus>('brainbit-status', handler);
   }
 
   // --- История сессий (SQLite) ----------------------------------------------

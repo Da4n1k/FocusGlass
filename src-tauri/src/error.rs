@@ -34,6 +34,9 @@ pub enum AppError {
 
     #[error("Unknown device source: {0:?}")]
     UnknownDeviceSource(String),
+
+    #[error("BCI error: {0}")]
+    Bci(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -50,6 +53,7 @@ impl AppError {
             AppError::InvalidArgument(_) => "invalid_argument",
             AppError::ClickThroughUnavailable => "click_through_unavailable",
             AppError::UnknownDeviceSource(_) => "unknown_device_source",
+            AppError::Bci(_) => "bci",
         }
     }
 }

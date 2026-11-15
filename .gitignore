@@ -42,3 +42,9 @@ src-tauri/gen/
 
 # Claude Code: личные настройки
 .claude/settings.local.json
+
+# Local NeuroSDK2 native libraries (fetched via scripts/fetch-neurosdk2.ps1)
+src-tauri/vendor/*.dll
+src-tauri/vendor/*.so
+src-tauri/vendor/*.dylib
+src-tauri/vendor/*.lib

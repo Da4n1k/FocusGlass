@@ -89,7 +89,7 @@ export const BentoMetricGrid: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
                   <span>
-                    BrainBit BLE is not connected (NeuroSDK2 adapter pending). Switch to Simulator to test БОС rules.
+                    BrainBit BLE не подключён. Откройте Настройки → BrainBit &amp; Simulator или переключитесь на Симулятор.
                   </span>
                 </div>
                 <button

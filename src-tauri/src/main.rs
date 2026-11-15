@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bci;
 mod commands;
 mod distraction;
 mod error;
@@ -38,6 +39,9 @@ pub fn request_quit(app: &AppHandle) {
         .emit_to(overlay::MAIN_LABEL, overlay::EVENT_QUIT_REQUESTED, ())
         .is_err()
     {
+        if let Some(driver) = app.try_state::<bci::BrainBitDriver>() {
+            driver.shutdown();
+        }
         app.exit(0);
         return;
     }
@@ -46,9 +50,15 @@ pub fn request_quit(app: &AppHandle) {
         .name("focusglass-quit-watchdog".to_string())
         .spawn(move || {
             thread::sleep(QUIT_GRACE_PERIOD);
+            if let Some(driver) = handle.try_state::<bci::BrainBitDriver>() {
+                driver.shutdown();
+            }
             handle.exit(0);
         });
     if spawned.is_err() {
+        if let Some(driver) = app.try_state::<bci::BrainBitDriver>() {
+            driver.shutdown();
+        }
         app.exit(0);
     }
 }
@@ -64,8 +74,15 @@ fn restore_control(app: &AppHandle) {
 }
 
 fn setup(app: &AppHandle, restore_shortcut: Shortcut) -> AppResult<()> {
-    let db_path = app.path().app_data_dir()?.join("focusglass.sqlite3");
+    let app_data_dir = app.path().app_data_dir()?;
+    let resource_dir = app.path().resource_dir().ok();
+    let db_path = app_data_dir.join("focusglass.sqlite3");
     app.manage(SessionStore::open(&db_path)?);
+    app.manage(bci::BrainBitDriver::start(
+        app.clone(),
+        Some(app_data_dir.as_path()),
+        resource_dir.as_deref(),
+    ));
 
     // Регистрируем трей до глобального хоткея, чтобы проверка click-through знала,
     // есть ли резервный способ вернуть управление помимо Ctrl+Shift+G.
@@ -172,6 +189,9 @@ fn main() {
             commands::get_device_status,
             commands::set_device_source,
             commands::scan_brainbit_devices,
+            commands::connect_brainbit,
+            commands::disconnect_brainbit,
+            commands::set_brainbit_mode,
             commands::get_window_state,
             commands::set_click_through,
             commands::set_overlay_enabled,

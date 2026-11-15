@@ -11,6 +11,7 @@ import type {
   ForegroundWindowInfo,
   HudAction,
   OverlayFrame,
+  BrainBitStreamMode,
 } from '../services/eegTypes';
 import type { EEGRecording } from '../services/eegRecording';
 import { parseEEGRecording } from '../services/eegRecording';
@@ -20,6 +21,8 @@ import { DEFAULT_SETTINGS, sanitizeSettings } from '../services/settingsSchema';
 import { simulationEngine } from '../services/simulationEngine';
 import { audioFeedback } from '../services/audioFeedback';
 import { tauriBridge } from '../services/tauriBridge';
+import { FitStabilityTracker } from '../services/headbandFitCheck';
+import { areAllElectrodesUsable } from '../services/signalQuality';
 import {
   createSessionRepository,
   mergeSession,
@@ -167,6 +170,14 @@ interface FocusStoreState {
   distractionSupported: boolean;
   foregroundWindow: ForegroundWindowInfo | null;
 
+  // BrainBit BLE & Fit Check
+  fitHoldMs: number;
+  fitVerified: boolean;
+  connectBrainBitDevice: (address: string, initialMode?: BrainBitStreamMode) => Promise<DeviceStatus>;
+  disconnectBrainBitDevice: () => Promise<void>;
+  startFitCheck: () => Promise<void>;
+  startEegStreamFromFitCheck: () => Promise<void>;
+
   // Controls
   activePreset: PresetState;
   setPreset: (preset: PresetState) => void;
@@ -209,6 +220,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
   const playback = new RecordingPlayback();
   const storedCalibration = loadPersistedCalibration();
   const sessions = createSessionRepository();
+  const fitStability = new FitStabilityTracker();
   let simulatorWasPausedBeforePlayback: boolean | null = null;
   let calibrationFrames: EEGTelemetry[] = [];
   let calibrationTimer: ReturnType<typeof setInterval> | null = null;
@@ -261,7 +273,12 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     const { feedbackState, settings, deviceStatus, telemetry } = state;
     const isSimulator = settings.deviceSource === 'simulator';
     const streamActive = isSimulator || deviceStatus.connected;
-    const canDim = streamActive && feedbackState.isContactOk && feedbackState.isDimmingActive;
+    const isFitCheckActive = !isSimulator && deviceStatus.streamMode === 'resist';
+    const canDim =
+      streamActive &&
+      !isFitCheckActive &&
+      feedbackState.isContactOk &&
+      feedbackState.isDimmingActive;
     return {
       opacity: canDim ? feedbackState.overlayOpacity : 0,
       blurPx: canDim ? feedbackState.blurRadius : 0,
@@ -344,7 +361,10 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       state.settings.audioFeedbackEnabled &&
       feedbackState.isDimmingActive &&
       feedbackState.isContactOk &&
-      !(state.settings.deviceSource === 'bluetooth' && !state.deviceStatus.connected);
+      !(
+        state.settings.deviceSource === 'bluetooth' &&
+        (!state.deviceStatus.connected || state.deviceStatus.streamMode === 'resist')
+      );
 
     audioFeedback.sync(shouldPlayAudio, feedbackState.audioVolume);
 
@@ -388,6 +408,35 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     if (get().settings.deviceSource === 'bluetooth') {
       simulationEngine.ingestRawBrainBitPacket(packet);
     }
+  });
+
+  void tauriBridge.onBrainBitRawBatch((packets) => {
+    if (get().settings.deviceSource === 'bluetooth') {
+      simulationEngine.ingestRawBrainBitBatch(packets);
+    }
+  });
+
+  void tauriBridge.onBrainBitResist((update) => {
+    if (get().settings.deviceSource === 'bluetooth') {
+      const allUsable = areAllElectrodesUsable(update.signalQuality, update.resistanceKOhm);
+      const fit = fitStability.update(allUsable, update.timestamp || Date.now());
+      simulationEngine.applyBrainBitResistUpdate(update);
+      set({ fitHoldMs: fit.holdMs, fitVerified: fit.verified });
+    }
+  });
+
+  void tauriBridge.onBrainBitStatus((status) => {
+    const prevMode = get().deviceStatus.streamMode;
+    if (!status.connected || status.streamMode === 'idle' || (status.streamMode === 'resist' && prevMode !== 'resist')) {
+      fitStability.reset();
+      set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false });
+    } else {
+      set({ deviceStatus: status });
+    }
+    if (!status.connected || status.streamMode !== 'signal') {
+      audioFeedback.sync(false, 0);
+    }
+    publishOverlay();
   });
 
   void sessions.list().then(
@@ -481,6 +530,8 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
       if (newSettings.deviceSource && newSettings.deviceSource !== current.deviceSource) {
         audioFeedback.sync(false, 0);
+        fitStability.reset();
+        set({ fitHoldMs: 0, fitVerified: false });
         void tauriBridge.setDeviceSource(newSettings.deviceSource).then((deviceStatus) => {
           set({ deviceStatus });
           publishOverlay();
@@ -626,6 +677,82 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     distractionSupported: false,
     foregroundWindow: null,
 
+    fitHoldMs: 0,
+    fitVerified: false,
+
+    connectBrainBitDevice: async (address, initialMode = 'resist') => {
+      try {
+        const status = await tauriBridge.connectBrainBit(address, initialMode);
+        if (get().settings.deviceSource !== 'bluetooth') {
+          simulationEngine.updateSettings({ deviceSource: 'bluetooth' });
+          const updated = simulationEngine.getSettings();
+          savePersistedSettings(updated);
+          set({ settings: updated });
+        }
+        fitStability.reset();
+        set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false });
+        publishOverlay();
+        showNotice(
+          'info',
+          initialMode === 'resist'
+            ? `BrainBit подключён (${status.deviceName}). Идёт проверка посадки электродов.`
+            : `BrainBit подключён (${status.deviceName}).`
+        );
+        return status;
+      } catch (err) {
+        const message = errorText(err);
+        showNotice('error', `Не удалось подключиться к BrainBit: ${message}`);
+        throw err;
+      }
+    },
+
+    disconnectBrainBitDevice: async () => {
+      try {
+        const status = await tauriBridge.disconnectBrainBit();
+        fitStability.reset();
+        audioFeedback.sync(false, 0);
+        set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false });
+        publishOverlay();
+      } catch (err) {
+        showNotice('error', `Ошибка отключения BrainBit: ${errorText(err)}`);
+      }
+    },
+
+    startFitCheck: async () => {
+      const { settings, deviceStatus } = get();
+      if (settings.deviceSource === 'simulator') {
+        fitStability.reset();
+        set({ fitHoldMs: 0, fitVerified: false });
+        return;
+      }
+      if (!deviceStatus.connected) {
+        showNotice('info', 'Сначала подключите BrainBit во вкладке BrainBit & Simulator.');
+        return;
+      }
+      try {
+        fitStability.reset();
+        audioFeedback.sync(false, 0);
+        const status = await tauriBridge.setBrainBitMode('resist');
+        set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false });
+        publishOverlay();
+      } catch (err) {
+        showNotice('error', `Не удалось запустить проверку посадки: ${errorText(err)}`);
+      }
+    },
+
+    startEegStreamFromFitCheck: async () => {
+      const { settings, deviceStatus } = get();
+      if (settings.deviceSource !== 'bluetooth' || !deviceStatus.connected) return;
+      try {
+        const status = await tauriBridge.setBrainBitMode('signal');
+        set({ deviceStatus: status });
+        publishOverlay();
+      } catch (err) {
+        showNotice('error', `Не удалось запустить поток ЭЭГ 250 Гц: ${errorText(err)}`);
+        throw err;
+      }
+    },
+
     activePreset: 'calm_flow',
     setPreset: (preset) => {
       simulationEngine.setPreset(preset);
@@ -753,53 +880,73 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         return;
       }
 
-      const durationSec = durationOverride ?? state.calibrationDurationSeconds;
-      calibrationFrames = [];
-      const startedAt = Date.now();
-      const totalMs = durationSec * 1000;
+      const beginCountdown = () => {
+        const current = get();
+        if (current.isCalibrating) return;
+        const durationSec = durationOverride ?? current.calibrationDurationSeconds;
+        calibrationFrames = [];
+        const startedAt = Date.now();
+        const totalMs = durationSec * 1000;
 
-      if (calibrationTimer) {
-        clearInterval(calibrationTimer);
+        if (calibrationTimer) {
+          clearInterval(calibrationTimer);
+        }
+
+        set({
+          isCalibrating: true,
+          calibrationDurationSeconds: durationSec,
+          calibrationProgress: 0,
+          calibrationRemainingSeconds: durationSec,
+          calibrationResult: null,
+        });
+
+        calibrationTimer = setInterval(() => {
+          if (!get().isCalibrating) {
+            if (calibrationTimer) clearInterval(calibrationTimer);
+            calibrationTimer = null;
+            return;
+          }
+
+          const elapsedMs = Date.now() - startedAt;
+          const progress = Math.min(100, Math.round((elapsedMs / totalMs) * 100));
+          const remainingSec = Math.max(0, Math.ceil((totalMs - elapsedMs) / 1000));
+
+          if (elapsedMs >= totalMs) {
+            if (calibrationTimer) clearInterval(calibrationTimer);
+            calibrationTimer = null;
+            const activeMode = get().settings.mode;
+            const result = BiofeedbackEngine.calibrateBaseline(calibrationFrames, activeMode);
+            calibrationFrames = [];
+            set({
+              isCalibrating: false,
+              calibrationProgress: 100,
+              calibrationRemainingSeconds: 0,
+              calibrationResult: result,
+            });
+          } else {
+            set({
+              calibrationProgress: progress,
+              calibrationRemainingSeconds: remainingSec,
+            });
+          }
+        }, 200);
+      };
+
+      if (
+        state.settings.deviceSource === 'bluetooth' &&
+        state.deviceStatus.connected &&
+        state.deviceStatus.streamMode !== 'signal'
+      ) {
+        void get()
+          .startEegStreamFromFitCheck()
+          .then(beginCountdown)
+          .catch(() => {
+            // Notice already displayed by startEegStreamFromFitCheck
+          });
+        return;
       }
 
-      set({
-        isCalibrating: true,
-        calibrationDurationSeconds: durationSec,
-        calibrationProgress: 0,
-        calibrationRemainingSeconds: durationSec,
-        calibrationResult: null,
-      });
-
-      calibrationTimer = setInterval(() => {
-        if (!get().isCalibrating) {
-          if (calibrationTimer) clearInterval(calibrationTimer);
-          calibrationTimer = null;
-          return;
-        }
-
-        const elapsedMs = Date.now() - startedAt;
-        const progress = Math.min(100, Math.round((elapsedMs / totalMs) * 100));
-        const remainingSec = Math.max(0, Math.ceil((totalMs - elapsedMs) / 1000));
-
-        if (elapsedMs >= totalMs) {
-          if (calibrationTimer) clearInterval(calibrationTimer);
-          calibrationTimer = null;
-          const activeMode = get().settings.mode;
-          const result = BiofeedbackEngine.calibrateBaseline(calibrationFrames, activeMode);
-          calibrationFrames = [];
-          set({
-            isCalibrating: false,
-            calibrationProgress: 100,
-            calibrationRemainingSeconds: 0,
-            calibrationResult: result,
-          });
-        } else {
-          set({
-            calibrationProgress: progress,
-            calibrationRemainingSeconds: remainingSec,
-          });
-        }
-      }, 200);
+      beginCountdown();
     },
 
     cancelCalibration: () => {

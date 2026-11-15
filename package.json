@@ -11,7 +11,10 @@
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
-    "desktop:build:binary": "tauri build --no-bundle"
+    "postdesktop:build": "node scripts/sync-build-artifacts.mjs",
+    "desktop:build:binary": "tauri build --no-bundle",
+    "postdesktop:build:binary": "node scripts/sync-build-artifacts.mjs --binary-only",
+    "desktop:sync-artifacts": "node scripts/sync-build-artifacts.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",

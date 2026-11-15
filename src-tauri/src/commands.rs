@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, State, Window};
 
+use crate::bci::BrainBitDriver;
 use crate::distraction::{
     DistractionConfig, DistractionState, DistractionStatus, ForegroundWindowInfo,
 };
@@ -26,7 +27,7 @@ pub fn ensure_click_through_allowed(enabled: bool, can_restore: bool) -> AppResu
 }
 
 // ---------------------------------------------------------------------------
-// Устройство (Фаза 3 не реализована: BLE честно сообщает об отсутствии SDK)
+// Устройство (BrainBit BLE через NeuroSDK2 + режим симулятора)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +40,14 @@ pub struct DeviceStatusResponse {
     pub device_name: String,
     pub sampling_rate_hz: u32,
     pub status_message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sdk_available: Option<bool>,
 }
 
 impl DeviceStatusResponse {
@@ -52,10 +61,22 @@ impl DeviceStatusResponse {
             sampling_rate_hz: 250,
             status_message: "Synthetic 4-channel EEG stream active (demo/testing mode)."
                 .to_string(),
+            stream_mode: None,
+            device_address: None,
+            serial_number: None,
+            sdk_available: None,
         }
     }
 
     pub fn bluetooth_pending() -> Self {
+        Self::bluetooth_pending_with_reason(None)
+    }
+
+    pub fn bluetooth_pending_with_reason(reason: Option<String>) -> Self {
+        let message = reason.unwrap_or_else(|| {
+            "NeuroSDK2 library is unavailable in this runtime. Switch to Simulator or install neurosdk2-x64.dll."
+                .to_string()
+        });
         Self {
             connected: false,
             device_source: "bluetooth".to_string(),
@@ -63,13 +84,34 @@ impl DeviceStatusResponse {
             battery_percentage: 0,
             device_name: "BrainBit BLE (not connected)".to_string(),
             sampling_rate_hz: 250,
+            status_message: message,
+            stream_mode: Some("idle".to_string()),
+            device_address: None,
+            serial_number: None,
+            sdk_available: Some(false),
+        }
+    }
+
+    pub fn bluetooth_ready() -> Self {
+        Self {
+            connected: false,
+            device_source: "bluetooth".to_string(),
+            connection_state: "disconnected".to_string(),
+            battery_percentage: 0,
+            device_name: "BrainBit BLE (not connected)".to_string(),
+            sampling_rate_hz: 250,
             status_message:
-                "NeuroSDK2 adapter is not linked in this build yet. Switch to Simulator to test biofeedback."
+                "NeuroSDK2 ready. Turn on BrainBit and click «Scan BrainBit BLE» to connect."
                     .to_string(),
+            stream_mode: Some("idle".to_string()),
+            device_address: None,
+            serial_number: None,
+            sdk_available: Some(true),
         }
     }
 
     /// Преобразует имя источника сигнала в статус; неизвестные значения отвергаются с ошибкой.
+    #[cfg(test)]
     pub fn for_source(source: &str) -> AppResult<Self> {
         match source {
             "simulator" => Ok(Self::simulator()),
@@ -79,11 +121,11 @@ impl DeviceStatusResponse {
     }
 }
 
-pub struct DeviceManagerState(pub Mutex<DeviceStatusResponse>);
+pub struct DeviceManagerState(pub Mutex<String>);
 
 impl Default for DeviceManagerState {
     fn default() -> Self {
-        Self(Mutex::new(DeviceStatusResponse::simulator()))
+        Self(Mutex::new("simulator".to_string()))
     }
 }
 
@@ -93,6 +135,10 @@ pub struct DiscoveredBrainBitDevice {
     pub name: String,
     pub address: String,
     pub rssi: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,37 +150,100 @@ pub struct BrainBitScanResponse {
 }
 
 #[tauri::command]
-pub fn get_device_status(state: State<'_, DeviceManagerState>) -> AppResult<DeviceStatusResponse> {
-    let guard = state
+pub fn get_device_status(
+    state: State<'_, DeviceManagerState>,
+    driver: State<'_, BrainBitDriver>,
+) -> AppResult<DeviceStatusResponse> {
+    let source = state
         .0
         .lock()
-        .map_err(|_| AppError::LockPoisoned("device state"))?;
-    Ok(guard.clone())
+        .map_err(|_| AppError::LockPoisoned("device state"))?
+        .clone();
+    if source == "bluetooth" {
+        Ok(driver.bluetooth_status())
+    } else {
+        Ok(DeviceStatusResponse::simulator())
+    }
 }
 
 #[tauri::command]
-pub fn set_device_source(
+pub async fn set_device_source(
     source: String,
     state: State<'_, DeviceManagerState>,
+    driver: State<'_, BrainBitDriver>,
 ) -> AppResult<DeviceStatusResponse> {
-    let next = DeviceStatusResponse::for_source(&source)?;
-    let mut guard = state
-        .0
-        .lock()
-        .map_err(|_| AppError::LockPoisoned("device state"))?;
-    *guard = next;
-    Ok(guard.clone())
+    let validated = match source.as_str() {
+        "simulator" | "bluetooth" => source,
+        other => return Err(AppError::UnknownDeviceSource(other.to_string())),
+    };
+
+    {
+        let mut guard = state
+            .0
+            .lock()
+            .map_err(|_| AppError::LockPoisoned("device state"))?;
+        *guard = validated.clone();
+    }
+
+    if validated == "simulator" {
+        let drv = driver.inner().clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || drv.disconnect()).await;
+        Ok(DeviceStatusResponse::simulator())
+    } else {
+        Ok(driver.bluetooth_status())
+    }
 }
 
 #[tauri::command]
-pub fn scan_brainbit_devices() -> AppResult<BrainBitScanResponse> {
-    // Граница IPC для BLE-сканера NeuroSDK2. Пока FFI не подключён (Фаза 3),
-    // возвращаем пустой список — никаких вымышленных устройств.
-    Ok(BrainBitScanResponse {
-        sdk_available: false,
-        devices: Vec::new(),
-        message: "NeuroSDK2 BLE transport is not linked in src-tauri yet.".to_string(),
-    })
+pub async fn scan_brainbit_devices(
+    duration_ms: Option<u64>,
+    driver: State<'_, BrainBitDriver>,
+) -> AppResult<BrainBitScanResponse> {
+    let drv = driver.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || drv.scan(duration_ms))
+        .await
+        .map_err(|e| AppError::Bci(format!("BLE scan task panicked: {e}")))?
+}
+
+#[tauri::command]
+pub async fn connect_brainbit(
+    address: String,
+    initial_mode: Option<String>,
+    state: State<'_, DeviceManagerState>,
+    driver: State<'_, BrainBitDriver>,
+) -> AppResult<DeviceStatusResponse> {
+    {
+        let mut guard = state
+            .0
+            .lock()
+            .map_err(|_| AppError::LockPoisoned("device state"))?;
+        *guard = "bluetooth".to_string();
+    }
+    let drv = driver.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || drv.connect(address, initial_mode))
+        .await
+        .map_err(|e| AppError::Bci(format!("BLE connect task panicked: {e}")))?
+}
+
+#[tauri::command]
+pub async fn disconnect_brainbit(
+    driver: State<'_, BrainBitDriver>,
+) -> AppResult<DeviceStatusResponse> {
+    let drv = driver.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || drv.disconnect())
+        .await
+        .map_err(|e| AppError::Bci(format!("BLE disconnect task panicked: {e}")))?
+}
+
+#[tauri::command]
+pub async fn set_brainbit_mode(
+    mode: String,
+    driver: State<'_, BrainBitDriver>,
+) -> AppResult<DeviceStatusResponse> {
+    let drv = driver.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || drv.set_mode(mode))
+        .await
+        .map_err(|e| AppError::Bci(format!("BLE mode switch task panicked: {e}")))?
 }
 
 // ---------------------------------------------------------------------------
@@ -410,7 +519,8 @@ pub fn close_window(app: AppHandle) -> AppResult<()> {
 
 /// Завершает приложение. Фронтенд вызывает её после сохранения активной сессии.
 #[tauri::command]
-pub fn quit_app(app: AppHandle) {
+pub fn quit_app(app: AppHandle, driver: State<'_, BrainBitDriver>) {
+    driver.shutdown();
     app.exit(0);
 }
 
@@ -518,6 +628,12 @@ mod tests {
         assert_eq!(json["deviceSource"], "simulator");
         assert_eq!(json["samplingRateHz"], 250);
         assert!(json.get("device_source").is_none());
+
+        let ready = serde_json::to_value(DeviceStatusResponse::bluetooth_ready()).expect("ready");
+        assert_eq!(ready["connected"], false);
+        assert_eq!(ready["connectionState"], "disconnected");
+        assert_eq!(ready["sdkAvailable"], true);
+        assert_eq!(ready["streamMode"], "idle");
     }
 
     #[test]

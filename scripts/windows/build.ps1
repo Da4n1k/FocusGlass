@@ -23,6 +23,12 @@ function Step([string]$Name, [scriptblock]$Cmd) {
 Set-Location $Repo
 if (-not $NoPull) { Step 'git pull' { git pull --ff-only } }
 Step 'git rev' { git log --oneline -1 }
+$VendorDll = Join-Path $Repo 'src-tauri\vendor\neurosdk2-x64.dll'
+if (-not (Test-Path $VendorDll)) {
+    Step 'fetch neurosdk2-x64.dll' {
+        powershell -ExecutionPolicy Bypass -File (Join-Path $Repo 'scripts\fetch-neurosdk2.ps1')
+    }
+}
 Step 'npm ci' { npm.cmd ci --no-audit --no-fund }
 Step 'tauri build' { npx.cmd tauri build }
 
@@ -33,6 +39,13 @@ if (-not $setup) { throw 'No NSIS installer produced' }
 
 New-Item -ItemType Directory $OutDir -Force | Out-Null
 Copy-Item $exe (Join-Path $OutDir 'FocusGlass.exe') -Force
+if (Test-Path $VendorDll) {
+    Copy-Item $VendorDll (Join-Path $OutDir 'neurosdk2-x64.dll') -Force
+}
+$WebViewDll = Join-Path $Repo 'src-tauri\target\release\WebView2Loader.dll'
+if (Test-Path $WebViewDll) {
+    Copy-Item $WebViewDll (Join-Path $OutDir 'WebView2Loader.dll') -Force
+}
 Copy-Item $setup.FullName $OutDir -Force
 Get-ChildItem $OutDir | Format-Table Name, Length, LastWriteTime -AutoSize
 Write-Host 'BUILD_OK'

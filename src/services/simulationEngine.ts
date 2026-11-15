@@ -8,6 +8,7 @@ import type {
   ChannelResistanceKOhm,
   RawBrainBitPacket,
   CalibrationResult,
+  BrainBitResistUpdate,
 } from './eegTypes';
 import { BiofeedbackEngine, DEFAULT_SETTINGS } from './biofeedbackEngine';
 import { EEGSignalProcessor } from './eegSignalProcessor';
@@ -202,6 +203,74 @@ export class SimulationEngine {
       resistanceKOhm: packet.resistanceKOhm,
     });
     return this.ingestExternalTelemetry(frame);
+  }
+
+  /**
+   * Processes a batched slice of live 250 Hz BrainBit packets, computing DSP and
+   * biofeedback on every sample while notifying UI subscribers once per batch (~50 Hz).
+   */
+  public ingestRawBrainBitBatch(packets: RawBrainBitPacket[]): BiofeedbackFeedbackState {
+    if (packets.length === 0) {
+      return this.biofeedback.getLastState();
+    }
+    let latestState = this.biofeedback.getLastState();
+    for (const packet of packets) {
+      const quality = packet.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
+      const telemetry = this.signalProcessor.toTelemetryFrame({
+        timestamp: packet.timestamp ?? Date.now(),
+        rawChannels: packet.rawChannels,
+        signalQuality: quality,
+        resistanceKOhm: packet.resistanceKOhm,
+      });
+      latestState = this.biofeedback.processTelemetry(telemetry);
+      this.latestTelemetry = telemetry;
+      this.rawBatchBuffer.push(telemetry);
+    }
+    if (this.rawBatchBuffer.length > 1000) {
+      this.rawBatchBuffer = this.rawBatchBuffer.slice(-1000);
+    }
+    if (this.latestTelemetry) {
+      this.notify(this.latestTelemetry, latestState, this.biofeedback.getSessionStats());
+    }
+    return latestState;
+  }
+
+  /**
+   * Publishes live Fit Check impedance updates (`CommandStartResist`) to UI subscribers
+   * while keeping dimming and audio biofeedback safely suspended.
+   */
+  public applyBrainBitResistUpdate(update: BrainBitResistUpdate): void {
+    const allOk =
+      update.signalQuality.t3 &&
+      update.signalQuality.t4 &&
+      update.signalQuality.o1 &&
+      update.signalQuality.o2;
+
+    const prev = this.latestTelemetry;
+    const telemetry: EEGTelemetry = {
+      timestamp: update.timestamp,
+      rawChannels: prev?.rawChannels ?? { t3: 0, t4: 0, o1: 0, o2: 0 },
+      concentration: prev?.concentration ?? 0,
+      relaxation: prev?.relaxation ?? 0,
+      signalQuality: update.signalQuality,
+      resistanceKOhm: update.resistanceKOhm,
+      spectrum: prev?.spectrum,
+      isArtifact: false,
+    };
+
+    const safeState: BiofeedbackFeedbackState = {
+      ...this.biofeedback.getLastState(),
+      deficit: 0,
+      overlayOpacity: 0,
+      blurRadius: 0,
+      audioVolume: 0,
+      isDimmingActive: false,
+      isContactOk: allOk,
+      isArtifactFrozen: false,
+    };
+
+    this.latestTelemetry = telemetry;
+    this.notify(telemetry, safeState, this.biofeedback.getSessionStats());
   }
 
   /** Process every recorded sample while publishing only the newest frame per UI batch. */

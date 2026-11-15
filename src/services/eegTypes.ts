@@ -87,6 +87,8 @@ export type DeviceConnectionState =
   | 'connected'
   | 'sdk_unavailable';
 
+export type BrainBitStreamMode = 'idle' | 'resist' | 'signal';
+
 export interface DeviceStatus {
   connected: boolean;
   deviceSource: 'simulator' | 'bluetooth';
@@ -95,12 +97,24 @@ export interface DeviceStatus {
   deviceName: string;
   samplingRateHz: number;
   statusMessage?: string;
+  streamMode?: BrainBitStreamMode;
+  deviceAddress?: string;
+  serialNumber?: string;
+  sdkAvailable?: boolean;
 }
 
 export interface DiscoveredBrainBitDevice {
   name: string;
   address: string;
   rssi?: number;
+  serialNumber?: string;
+  family?: string;
+}
+
+export interface BrainBitResistUpdate {
+  timestamp: number;
+  resistanceKOhm: ChannelResistanceKOhm;
+  signalQuality: ElectrodeSignalQuality;
 }
 
 export interface BrainBitScanResult {

@@ -99,7 +99,7 @@ $$I_c(t) = \frac{P_\beta(t)}{P_\theta(t) + P_\alpha(t)} \cdot K_{\text{calib}}$$
 | Компонент | Технология | Обоснование выбора |
 |---|---|---|
 | **Десктопный движок** | **Tauri v2 (Rust)** | Потребление памяти $<40$ МБ (в 8-10 раз легче Electron), мгновенный запуск, прямое управление Win32 API окнами. |
-| **Ядро бэкенда** | **Rust (Edition 2024)** | Неблокирующий обмен сообщениями монитора активных окон через `crossbeam-channel`, типизированные ошибки (`thiserror`), SQLite (`rusqlite`), WinAPI (`windows`) / GTK (`gtk` на Linux). `libloading` для работы с DLL понадобится в Фазе 3 и пока не подключён. |
+| **Ядро бэкенда** | **Rust (Edition 2024)** | Неблокирующий обмен сообщениями (BLE-драйвер BrainBit и монитор активных окон) через `crossbeam-channel`, динамическая загрузка SDK через `libloading`, типизированные ошибки (`thiserror`), SQLite (`rusqlite`), WinAPI (`windows`) / GTK (`gtk` на Linux). |
 | **UI Фреймворк** | **React 19 + TypeScript** | Декларативное управление состоянием, React Compiler, компонентная модульность, строгая типизация. |
 | **Сборщик фронтенда** | **Vite 6** | Мгновенный HMR (hot module replacement) $<50$ мс, идеальный dev-experience. |
 | **Дизайн-система** | **Tailwind CSS v4 + Liquid Glass** | Аппаратно-ускоренные фильтры размытия (`backdrop-filter`), кастомные glassmorphism токены, спекулярные блики. Токены заданы в `src/index.css` (`@theme`), файла `tailwind.config.ts` нет. |
@@ -229,7 +229,8 @@ FocusGlass/
 │   │   ├── personalCalibration.ts    # Индивидуальная калибровка базового уровня (10 с / 30 с)
 │   │   ├── eegRecordingPlayer.ts     # Плеер предзаписанных ЭЭГ в CSV/TSV/TXT/JSON
 │   │   ├── eegSignalProcessor.ts     # Биполярные отведения, режектор 50 Гц, Гёрцель, индексы
-│   │   ├── simulationEngine.ts       # TS-симулятор 250 Гц, приём внешних потоков, хоткеи 1–5
+│   │   ├── headbandFitCheck.ts       # Проверка посадки ободка: классификация кОм и 3с стабилизация
+│   │   ├── simulationEngine.ts       # TS-симулятор 250 Гц, приём потоков BrainBit, хоткеи 1–5
 │   │   ├── sessionRepository.ts      # История сессий: SQLite (Tauri) или localStorage (браузер)
 │   │   ├── overlayPublisher.ts       # Публикация fg://state для Linux overlay-*
 │   │   ├── overlaySync.ts / windowSync.ts / hudFit.ts
@@ -239,8 +240,13 @@ FocusGlass/
 │   └── stores/
 │       └── useFocusStore.ts          # Zustand-хранилище: телеметрия, настройки, сессии, окна
 │
+├── scripts/
+│   ├── fetch-neurosdk2.ps1           # Скачивание neurosdk2-x64.dll в gitignored src-tauri/vendor/
+│   ├── sync-build-artifacts.mjs      # Авто-копирование EXE/DLL/NSIS setup в ..\FocusGlass-build (Windows)
+│   └── windows/build.ps1             # Скрипт сборки Windows EXE + NSIS
+│
 ├── src-tauri/                        # Бэкенд на Rust (Tauri v2, edition 2024)
-│   ├── Cargo.toml                    # tauri, thiserror, crossbeam-channel, rusqlite, windows / gtk
+│   ├── Cargo.toml                    # tauri, thiserror, crossbeam-channel, libloading, rusqlite, windows / gtk
 │   ├── tauri.conf.json               # Базовый манифест (main, CSP, бандл)
 │   ├── tauri.windows.conf.json       # Настройки NSIS для Windows
 │   ├── tauri.linux.conf.json         # Настройки DEB / AppImage для Linux
@@ -257,10 +263,14 @@ FocusGlass/
 │       ├── tray.rs                   # Системный трей
 │       ├── distraction.rs            # SetWinEventHook: активное окно и список отвлекателей
 │       ├── storage.rs                # SQLite: история сессий
-│       └── bci/neurosdk_ffi.rs       # (Фаза 3, не создан) FFI-обёртка над neurosdk2.dll
+│       └── bci/                      # Аппаратный BLE-транспорт BrainBit через NeuroSDK2
+│           ├── mod.rs
+│           ├── neurosdk_ffi.rs       # Динамический FFI (libloading) над neurosdk2-x64.dll / .so / .dylib
+│           ├── contact.rs            # Нормализация Ом->кОм и детектор отрыва/насыщения 250 Гц
+│           └── driver.rs             # Поток-воркер BLE, переключение Resist <-> Signal и батчинг ЭЭГ
 │
 └── tests/                            # Тесты фронтенда (node:test, запуск: npm test)
-    ├── runner.ts                     # Реестр из 22 тестовых наборов
+    ├── runner.ts                     # Реестр из 23 тестовых наборов
     ├── tsLoader.mjs                  # Загрузчик TypeScript для Node
     ├── contracts/  fixtures/  harness/
     ├── tier1_features/               # Функции: БОС, DSP, калибровка, плеер, окна, SQLite
@@ -438,15 +448,14 @@ export interface SessionRecord extends SessionStatistics {
 ### Фаза 3: Аппаратная интеграция с BrainBit NeuroSDK2
 *Цель: Прямое подключение к физическому ободку BrainBit по Bluetooth LE.*
 
-- [ ] **Шаг 3.1 — Интеграция NeuroSDK2 FFI**:
-  - Подключение C-библиотек `neurosdk2.dll` через Rust `libloading`.
-  - Реализация BLE сканера для обнаружения устройств с именем `BrainBit`.
-- [ ] **Шаг 3.2 — Захват сигналов и обработка сопротивления**:
-  - Подписка на поток `SignalData` (250 Гц) и `ResistData` (сопротивление контактов).
-  - Мониторинг сопротивления электродов T3, T4, O1, O2 перед началом сессии.
-- [ ] **Шаг 3.3 — Подключение Emotions SDK**:
-  - Расчет реальных индексов концентрации и релаксации на живых данных.
-  - Индивидуальная калибровка базового уровня (10 с / 30 с) уже реализована в `personalCalibration.ts` для симулятора/записей и готова для живого потока.
+- [x] **Шаг 3.1 — Интеграция NeuroSDK2 FFI**:
+  - Динамическая загрузка `neurosdk2-x64.dll` (`.so`/`.dylib`) через Rust `libloading` и фоновый поток-воркер (`src-tauri/src/bci/`).
+  - Скрипт загрузки `scripts/fetch-neurosdk2.ps1`, BLE-сканер для обнаружения семейств BrainBit и команды подключения/отключения.
+- [x] **Шаг 3.2 — Захват сигналов и проверка посадки ободка**:
+  - Раздельные взаимоисключающие режимы `CommandStartResist` (проверка посадки с диагностикой лба/затылка/висков и 3-секундной стабилизацией при `≤800 кОм`) и `CommandStartSignal` (поток 250 Гц батчами через `brainbit-raw-batch`).
+  - Мониторинг сопротивления и детектор отрыва/насыщения электродов T3, T4, O1, O2 в реальном времени (`SignalContactMonitor`).
+- [x] **Шаг 3.3 — Живой расчёт индексов ЭЭГ и калибровка (встроенный DSP + опционально EmotionalMath)**:
+  - Индексы концентрации/релаксации, режектор 50 Гц и ~240 мс заморозка при артефактах работают на живом потоке 250 Гц через `EEGSignalProcessor` + `BiofeedbackEngine` (`personalCalibration.ts` автоматически переключает режим с `resist` на `signal` перед записью базового уровня). Внешний канал `brainbit-telemetry` для опциональной интеграции `EmotionalMath` сохранён.
 
 ### Фаза 4: Расширенные возможности БОС (Слайд 6 кейса)
 *Цель: Реализация бонусных задач, предложенных в техническом задании Нейротех.*
