@@ -16,6 +16,11 @@ const testFiles = [
   resolve('tests/tier1_features/liveEngineIntegration.test.ts'),
   resolve('tests/tier1_features/eegSignalProcessor.test.ts'),
   resolve('tests/tier1_features/eegRecording.test.ts'),
+  resolve('tests/tier1_features/settingsValidation.test.ts'),
+  resolve('tests/tier1_features/windowState.test.ts'),
+  resolve('tests/tier1_features/windowSync.test.ts'),
+  resolve('tests/tier1_features/overlaySync.test.ts'),
+  resolve('tests/tier1_features/hudFit.test.ts'),
 
   // Tier 2: Boundary & Corner Cases
   resolve('tests/tier2_boundaries/extremeLimits.test.ts'),

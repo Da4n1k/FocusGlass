@@ -107,6 +107,31 @@ export const BiofeedbackConfig: React.FC = () => {
         />
       </div>
 
+      {/* Inverted reaction: dim when the metric rises above the threshold */}
+      <div className="p-3.5 rounded-xl bg-slate-900/50 border border-white/10 flex items-center justify-between">
+        <div>
+          <span className="text-xs font-semibold text-white block">Invert Reaction</span>
+          <span className="text-[11px] text-slate-400">
+            Darken the screen when the score rises above the threshold instead of falling below it.
+          </span>
+        </div>
+        <button
+          role="switch"
+          aria-checked={settings.invertReaction}
+          aria-label="Invert Reaction"
+          onClick={() => updateSettings({ invertReaction: !settings.invertReaction })}
+          className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer border ${
+            settings.invertReaction ? 'bg-[#FF6600] border-[#FF6600]' : 'bg-slate-800 border-white/20'
+          }`}
+        >
+          <div
+            className={`w-4 h-4 rounded-full bg-white transition-transform transform ${
+              settings.invertReaction ? 'translate-x-6' : 'translate-x-1'
+            }`}
+          />
+        </button>
+      </div>
+
       {/* Audio Biofeedback Toggle */}
       <div className="p-3.5 rounded-xl bg-slate-900/50 border border-white/10 flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -136,6 +161,22 @@ export const BiofeedbackConfig: React.FC = () => {
           />
         </button>
       </div>
+
+      {settings.audioFeedbackEnabled && (
+        <div className="p-3.5 rounded-xl bg-slate-900/50 border border-white/10">
+          <GlassSlider
+            label="Audio Feedback Volume"
+            value={Math.round(settings.audioVolume * 100)}
+            min={0}
+            max={100}
+            step={5}
+            unit="%"
+            accentColor="orange"
+            description="Master volume of the biofeedback sound at full focus deficit."
+            onChange={(val) => updateSettings({ audioVolume: val / 100 })}
+          />
+        </div>
+      )}
     </div>
   );
 };

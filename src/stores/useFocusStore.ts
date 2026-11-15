@@ -12,7 +12,8 @@ import type {
 import type { EEGRecording } from '../services/eegRecording';
 import { parseEEGRecording } from '../services/eegRecording';
 import { RecordingPlayback } from '../services/recordingPlayback';
-import { BiofeedbackEngine, DEFAULT_SETTINGS } from '../services/biofeedbackEngine';
+import { BiofeedbackEngine } from '../services/biofeedbackEngine';
+import { DEFAULT_SETTINGS, sanitizeSettings } from '../services/settingsSchema';
 import { simulationEngine } from '../services/simulationEngine';
 import { audioFeedback } from '../services/audioFeedback';
 import { tauriBridge } from '../services/tauriBridge';
@@ -47,10 +48,9 @@ function loadPersistedSettings(): FocusGlassSettings {
   try {
     const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    const parsed = JSON.parse(raw) as Partial<FocusGlassSettings>;
+    // localStorage is untrusted (hand-edited, older schema, corrupted): validate every field.
     return {
-      ...DEFAULT_SETTINGS,
-      ...parsed,
+      ...sanitizeSettings(JSON.parse(raw) as unknown),
       // Always start in simulator until physical BrainBit session is explicitly selected
       deviceSource: 'simulator',
     };
@@ -116,6 +116,8 @@ interface FocusStoreState {
   sessionHistory: SessionRecord[];
   sessionStartedAt: string;
   deviceStatus: DeviceStatus;
+  /** Native overlay windows created by the backend; 0 means the in-page overlay is used. */
+  overlayWindowCount: number;
   isPaused: boolean;
 
   // Controls
@@ -203,6 +205,10 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     set({ deviceStatus: status });
   });
 
+  void tauriBridge.getOverlayInfo().then((info) => {
+    set({ overlayWindowCount: info.count });
+  });
+
   void tauriBridge.onBrainBitTelemetry((packet) => {
     if (get().settings.deviceSource === 'bluetooth') {
       simulationEngine.ingestExternalTelemetry(packet);
@@ -244,40 +250,34 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     viewMode: 'dashboard',
     setViewMode: (mode) => {
+      set({ viewMode: mode });
       if (mode === 'dashboard' && get().isClickThrough) {
-        void tauriBridge.setClickThrough(false);
-        set({ viewMode: mode, isClickThrough: false });
-      } else {
-        set({ viewMode: mode });
+        void get().setClickThrough(false);
       }
       void tauriBridge.setOverlayMode(mode === 'hud');
     },
 
     isClickThrough: false,
     setClickThrough: async (enabled) => {
-      await tauriBridge.setClickThrough(enabled);
-      set({ isClickThrough: enabled });
+      // Mirror only what the native window really applied (null = IPC failure).
+      const applied = await tauriBridge.setClickThrough(enabled);
+      if (applied !== null) set({ isClickThrough: applied });
     },
     toggleClickThrough: async () => {
-      const target = !get().isClickThrough;
-      await tauriBridge.setClickThrough(target);
-      set({ isClickThrough: target });
+      await get().setClickThrough(!get().isClickThrough);
     },
 
     isAlwaysOnTop: true,
     toggleAlwaysOnTop: async () => {
-      const target = !get().isAlwaysOnTop;
-      await tauriBridge.toggleAlwaysOnTop(target);
-      set({ isAlwaysOnTop: target });
+      const applied = await tauriBridge.toggleAlwaysOnTop(!get().isAlwaysOnTop);
+      if (applied !== null) set({ isAlwaysOnTop: applied });
     },
 
     isSettingsOpen: false,
     setIsSettingsOpen: (open) => {
+      set({ isSettingsOpen: open });
       if (open && get().isClickThrough) {
-        void tauriBridge.setClickThrough(false);
-        set({ isSettingsOpen: open, isClickThrough: false });
-      } else {
-        set({ isSettingsOpen: open });
+        void get().setClickThrough(false);
       }
     },
 
@@ -317,6 +317,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       samplingRateHz: 250,
       statusMessage: 'Synthetic 4-channel EEG stream active (demo/testing mode).',
     },
+    overlayWindowCount: 0,
     isPaused: false,
 
     activePreset: 'calm_flow',
