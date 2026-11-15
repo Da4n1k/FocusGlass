@@ -6,16 +6,9 @@ import type {
   CalibrationResult,
 } from './eegTypes';
 
-export const DEFAULT_SETTINGS: FocusGlassSettings = {
-  mode: 'concentration',
-  deviceSource: 'simulator',
-  threshold: 60,
-  sensitivitySeconds: 2.0,
-  dimmingMaxOpacity: 0.7,
-  blurRadius: 16,
-  audioFeedbackEnabled: false,
-  glassOpacity: 0.85,
-};
+import { DEFAULT_SETTINGS, sanitizeSettings } from './settingsSchema';
+
+export { DEFAULT_SETTINGS };
 
 export class BiofeedbackEngine {
   private settings: FocusGlassSettings;
@@ -28,7 +21,7 @@ export class BiofeedbackEngine {
 
   constructor(customSettings?: Partial<FocusGlassSettings>, sampleRateHz: number = 250) {
     this.sampleRateHz = Math.max(1, sampleRateHz);
-    this.settings = this.sanitizeSettings({ ...DEFAULT_SETTINGS, ...customSettings });
+    this.settings = sanitizeSettings(customSettings, DEFAULT_SETTINGS);
     this.recomputeBufferSize();
     this.lastState = this.createInitialState();
     this.sessionStats = this.createInitialStats();
@@ -61,17 +54,6 @@ export class BiofeedbackEngine {
     };
   }
 
-  private sanitizeSettings(next: FocusGlassSettings): FocusGlassSettings {
-    return {
-      ...next,
-      threshold: Math.max(10, Math.min(95, next.threshold)),
-      sensitivitySeconds: Math.max(0.001, Math.min(10.0, next.sensitivitySeconds)),
-      dimmingMaxOpacity: Math.max(0.05, Math.min(0.95, next.dimmingMaxOpacity)),
-      blurRadius: Math.max(0, Math.min(32, next.blurRadius)),
-      glassOpacity: Math.max(0.1, Math.min(1.0, next.glassOpacity)),
-    };
-  }
-
   public getSettings(): Readonly<FocusGlassSettings> {
     return { ...this.settings };
   }
@@ -79,7 +61,7 @@ export class BiofeedbackEngine {
   public updateSettings(newSettings: Partial<FocusGlassSettings>): void {
     const prevMode = this.settings.mode;
     const prevSource = this.settings.deviceSource;
-    this.settings = this.sanitizeSettings({ ...this.settings, ...newSettings });
+    this.settings = sanitizeSettings({ ...this.settings, ...newSettings }, this.settings);
 
     if (
       (newSettings.mode !== undefined && newSettings.mode !== prevMode) ||
@@ -157,8 +139,18 @@ export class BiofeedbackEngine {
     let audioVolume = 0;
     let isDimmingActive = false;
 
-    if (smoothedMetric < this.settings.threshold) {
-      deficit = (this.settings.threshold - smoothedMetric) / this.settings.threshold;
+    const { threshold } = this.settings;
+    if (this.settings.invertReaction) {
+      // Inverted: the screen darkens as the metric climbs above the threshold
+      // (threshold is clamped to <= 95, so the divisor is never zero).
+      if (smoothedMetric > threshold) {
+        deficit = (smoothedMetric - threshold) / (100 - threshold);
+      }
+    } else if (smoothedMetric < threshold) {
+      deficit = (threshold - smoothedMetric) / threshold;
+    }
+
+    if (deficit > 0) {
       deficit = Math.max(0, Math.min(1, deficit));
 
       overlayOpacity = deficit * this.settings.dimmingMaxOpacity;
@@ -166,7 +158,7 @@ export class BiofeedbackEngine {
       isDimmingActive = overlayOpacity > 0.01;
 
       if (this.settings.audioFeedbackEnabled) {
-        audioVolume = deficit;
+        audioVolume = deficit * this.settings.audioVolume;
       }
     }
 

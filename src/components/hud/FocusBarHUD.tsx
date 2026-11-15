@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useFocusStore } from '../../stores/useFocusStore';
 import { GlassPanel } from '../glass/GlassPanel';
+import { useFitHudWindow } from './useFitHudWindow';
 
 export const FocusBarHUD: React.FC = () => {
   const {
@@ -36,15 +37,25 @@ export const FocusBarHUD: React.FC = () => {
   const threshold = settings.threshold;
   const isBelowThreshold = isStreamActive && feedbackState.isContactOk && score < threshold;
 
+  // The native HUD window is sized to this element, so it is never clipped at any display scale.
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  useFitHudWindow(rootRef);
+
   return (
-    <div className="fixed top-5 right-5 z-50 select-none animate-in fade-in duration-300">
+    <div
+      ref={rootRef}
+      className="fixed top-5 right-5 z-50 select-none animate-in fade-in duration-300"
+    >
       <GlassPanel
         variant="primary"
         glow={isBelowThreshold ? 'orange' : 'cyan'}
         className="p-3.5 w-80 shadow-2xl backdrop-blur-2xl border-white/20"
       >
         {/* Top Header */}
-        <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-white/10">
+        <div
+          data-tauri-drag-region="deep"
+          className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-white/10"
+        >
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#FF6600] to-[#E64A00] flex items-center justify-center shadow-md">
               <Brain className="w-4 h-4 text-white" />
