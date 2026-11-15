@@ -4,7 +4,7 @@ import { useFocusStore } from '../../stores/useFocusStore';
 import { GlassSlider } from '../glass/GlassSlider';
 
 export const BiofeedbackConfig: React.FC = () => {
-  const { settings, updateSettings } = useFocusStore();
+  const { settings, activeCalibration, updateSettings } = useFocusStore();
 
   return (
     <div className="space-y-4">
@@ -53,14 +53,14 @@ export const BiofeedbackConfig: React.FC = () => {
       {/* Threshold Slider */}
       <div className="p-3.5 rounded-xl bg-slate-900/50 border border-white/10">
         <GlassSlider
-          label="Target Biofeedback Threshold"
+          label={activeCalibration ? 'Target Cutoff (Source Index)' : 'Target Biofeedback Threshold'}
           value={settings.threshold}
-          min={20}
-          max={90}
+          min={10}
+          max={95}
           step={5}
           unit="%"
           accentColor={settings.mode === 'concentration' ? 'orange' : 'violet'}
-          description="The cutoff point. Any score below this triggers proportional screen darkening."
+          description={activeCalibration ? 'Stored in the original Focus/Calm index. Personal calibration maps the cutoff to the displayed 0–100 score.' : 'The cutoff point. Any score below this triggers proportional screen darkening.'}
           onChange={(val) => updateSettings({ threshold: val })}
         />
       </div>

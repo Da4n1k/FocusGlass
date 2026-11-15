@@ -34,7 +34,7 @@ export const FocusBarHUD: React.FC = () => {
   const isStreamActive = isSimulator || deviceStatus.connected;
 
   const score = feedbackState.smoothedMetric;
-  const threshold = settings.threshold;
+  const threshold = feedbackState.effectiveThreshold ?? settings.threshold;
   const isBelowThreshold = isStreamActive && feedbackState.isContactOk && score < threshold;
 
   // The native HUD window is sized to this element, so it is never clipped at any display scale.

@@ -44,7 +44,7 @@ export const OverlayApp: React.FC = () => {
       cue={{
         isConcentration: snapshot.mode === 'concentration',
         smoothedMetric: snapshot.feedback.smoothedMetric,
-        threshold: snapshot.threshold,
+        threshold: Math.round(snapshot.feedback.effectiveThreshold ?? snapshot.threshold),
       }}
     />
   );

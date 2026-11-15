@@ -68,6 +68,8 @@ function isFeedbackState(value: unknown): value is BiofeedbackFeedbackState {
     isRecord(value) &&
     isFiniteNumber(value.currentMetric) &&
     isFiniteNumber(value.smoothedMetric) &&
+    (value.effectiveThreshold === undefined || isFiniteNumber(value.effectiveThreshold)) &&
+    (value.personalDeviation === undefined || isFiniteNumber(value.personalDeviation)) &&
     isFiniteNumber(value.deficit) &&
     isFiniteNumber(value.overlayOpacity) &&
     value.overlayOpacity >= 0 &&

@@ -11,6 +11,7 @@ export const BiofeedbackOverlay: React.FC = () => {
 
   const { overlayOpacity, blurRadius, isDimmingActive, isContactOk, smoothedMetric } =
     feedbackState;
+  const effectiveThreshold = feedbackState.effectiveThreshold ?? settings.threshold;
   const isStreamActive = settings.deviceSource === 'simulator' || deviceStatus.connected;
 
   const canDim = isStreamActive && isContactOk && isDimmingActive;
@@ -22,7 +23,7 @@ export const BiofeedbackOverlay: React.FC = () => {
       cue={{
         isConcentration: settings.mode === 'concentration',
         smoothedMetric,
-        threshold: settings.threshold,
+        threshold: Math.round(effectiveThreshold),
       }}
     />
   );

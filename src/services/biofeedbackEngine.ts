@@ -5,6 +5,27 @@ import type {
   SessionStatistics,
   CalibrationResult,
 } from './eegTypes';
+import { areAllElectrodesUsable, isTelemetryUsable } from './signalQuality';
+
+export interface PersonalScore {
+  /** Signed deviation from the personal norm, clamped to -100…+100. */
+  deviation: number;
+  /** 0…100 display score; personal baseline (deviation 0) maps to 50%. */
+  percentage: number;
+}
+
+export function mapMetricToPersonalScore(
+  value: number,
+  baseline: number,
+  variability: number
+): PersonalScore {
+  const robustScale = Math.max(4, Number.isFinite(variability) ? variability : 0);
+  const deviation = Math.max(-100, Math.min(100, ((value - baseline) / (2.5 * robustScale)) * 100));
+  return {
+    deviation: Number(deviation.toFixed(2)),
+    percentage: Number(((deviation + 100) / 2).toFixed(2)),
+  };
+}
 
 import { DEFAULT_SETTINGS, sanitizeSettings } from './settingsSchema';
 
@@ -18,6 +39,7 @@ export class BiofeedbackEngine {
   private lastState: BiofeedbackFeedbackState;
   private sessionStats: SessionStatistics;
   private isCurrentlyDimmed: boolean = false;
+  private personalCalibration: CalibrationResult | null = null;
 
   constructor(customSettings?: Partial<FocusGlassSettings>, sampleRateHz: number = 250) {
     this.sampleRateHz = Math.max(1, sampleRateHz);
@@ -31,6 +53,8 @@ export class BiofeedbackEngine {
     return {
       currentMetric: 100,
       smoothedMetric: 100,
+      effectiveThreshold: this.settings.threshold,
+      personalDeviation: 0,
       deficit: 0,
       overlayOpacity: 0,
       blurRadius: 0,
@@ -58,6 +82,34 @@ export class BiofeedbackEngine {
     return { ...this.settings };
   }
 
+  public setPersonalCalibration(calibration: CalibrationResult | null): void {
+    this.personalCalibration = calibration && (calibration.sampleCount ?? 0) > 0
+      ? { ...calibration }
+      : null;
+    this.metricBuffer = [];
+    this.lastState = {
+      ...this.lastState,
+      effectiveThreshold: this.getEffectiveThreshold(),
+      personalDeviation: 0,
+    };
+  }
+
+  public getPersonalCalibration(): CalibrationResult | null {
+    return this.personalCalibration ? { ...this.personalCalibration } : null;
+  }
+
+  private getEffectiveThreshold(): number {
+    const calibration = this.personalCalibration;
+    if (!calibration) return this.settings.threshold;
+    const baseline = this.settings.mode === 'concentration'
+      ? calibration.baselineFocus
+      : calibration.baselineRelaxation;
+    const variability = this.settings.mode === 'concentration'
+      ? calibration.variabilityFocus
+      : calibration.variabilityRelaxation;
+    return mapMetricToPersonalScore(this.settings.threshold, baseline, variability).percentage;
+  }
+
   public updateSettings(newSettings: Partial<FocusGlassSettings>): void {
     const prevMode = this.settings.mode;
     const prevSource = this.settings.deviceSource;
@@ -72,6 +124,7 @@ export class BiofeedbackEngine {
     }
 
     this.recomputeBufferSize();
+    this.lastState = { ...this.lastState, effectiveThreshold: this.getEffectiveThreshold() };
   }
 
   private recomputeBufferSize(): void {
@@ -79,6 +132,21 @@ export class BiofeedbackEngine {
     if (this.metricBuffer.length > this.maxBufferSize) {
       this.metricBuffer = this.metricBuffer.slice(-this.maxBufferSize);
     }
+  }
+
+  public clearSmoothingWindow(): void {
+    this.metricBuffer = [];
+    this.isCurrentlyDimmed = false;
+    this.lastState = {
+      ...this.lastState,
+      smoothedMetric: this.lastState.currentMetric,
+      deficit: 0,
+      overlayOpacity: 0,
+      blurRadius: 0,
+      audioVolume: 0,
+      isDimmingActive: false,
+      isArtifactFrozen: false,
+    };
   }
 
   public resetSession(): void {
@@ -89,11 +157,10 @@ export class BiofeedbackEngine {
   }
 
   public processTelemetry(telemetry: EEGTelemetry): BiofeedbackFeedbackState {
-    const isContactOk =
-      telemetry.signalQuality.t3 &&
-      telemetry.signalQuality.t4 &&
-      telemetry.signalQuality.o1 &&
-      telemetry.signalQuality.o2;
+    const isContactOk = areAllElectrodesUsable(
+      telemetry.signalQuality,
+      telemetry.resistanceKOhm
+    );
 
     if (telemetry.isArtifact) {
       this.sessionStats.artifactCount++;
@@ -122,8 +189,27 @@ export class BiofeedbackEngine {
       return this.lastState;
     }
 
-    const rawMetric =
+    const sourceMetric =
       this.settings.mode === 'concentration' ? telemetry.concentration : telemetry.relaxation;
+    const sourceThreshold = this.settings.threshold;
+    const calibration = this.personalCalibration;
+    const baseline = calibration
+      ? this.settings.mode === 'concentration'
+        ? calibration.baselineFocus
+        : calibration.baselineRelaxation
+      : null;
+    const variability = calibration
+      ? this.settings.mode === 'concentration'
+        ? calibration.variabilityFocus
+        : calibration.variabilityRelaxation
+      : 0;
+    const personalScore = baseline === null
+      ? null
+      : mapMetricToPersonalScore(sourceMetric, baseline, variability);
+    const rawMetric = personalScore?.percentage ?? sourceMetric;
+    const activeThreshold = baseline === null
+      ? sourceThreshold
+      : mapMetricToPersonalScore(sourceThreshold, baseline, variability).percentage;
 
     this.metricBuffer.push(rawMetric);
     if (this.metricBuffer.length > this.maxBufferSize) {
@@ -139,15 +225,13 @@ export class BiofeedbackEngine {
     let audioVolume = 0;
     let isDimmingActive = false;
 
-    const { threshold } = this.settings;
     if (this.settings.invertReaction) {
-      // Inverted: the screen darkens as the metric climbs above the threshold
-      // (threshold is clamped to <= 95, so the divisor is never zero).
-      if (smoothedMetric > threshold) {
-        deficit = (smoothedMetric - threshold) / (100 - threshold);
+      // Inverted: the screen darkens as the metric climbs above the active threshold.
+      if (smoothedMetric > activeThreshold) {
+        deficit = (smoothedMetric - activeThreshold) / Math.max(1, 100 - activeThreshold);
       }
-    } else if (smoothedMetric < threshold) {
-      deficit = (threshold - smoothedMetric) / threshold;
+    } else if (smoothedMetric < activeThreshold) {
+      deficit = (activeThreshold - smoothedMetric) / Math.max(1, activeThreshold);
     }
 
     if (deficit > 0) {
@@ -190,6 +274,8 @@ export class BiofeedbackEngine {
     this.lastState = {
       currentMetric: rawMetric,
       smoothedMetric: Number(smoothedMetric.toFixed(2)),
+      effectiveThreshold: Number(activeThreshold.toFixed(2)),
+      ...(personalScore ? { personalDeviation: personalScore.deviation } : { personalDeviation: 0 }),
       deficit: Number(deficit.toFixed(4)),
       overlayOpacity: Number(overlayOpacity.toFixed(4)),
       blurRadius: Number(blurRadius.toFixed(2)),
@@ -224,52 +310,78 @@ export class BiofeedbackEngine {
     frames: EEGTelemetry[],
     mode: 'concentration' | 'relaxation' = 'concentration'
   ): CalibrationResult {
-    const validFrames = frames.filter(
-      (f) =>
-        !f.isArtifact &&
-        f.signalQuality.t3 &&
-        f.signalQuality.t4 &&
-        f.signalQuality.o1 &&
-        f.signalQuality.o2
+    const validFrames = frames.filter((frame) =>
+      isTelemetryUsable(frame) &&
+      Number.isFinite(frame.concentration) && frame.concentration >= 0 && frame.concentration <= 100 &&
+      Number.isFinite(frame.relaxation) && frame.relaxation >= 0 && frame.relaxation <= 100
     );
+    const validSampleRatio = frames.length === 0 ? 0 : validFrames.length / frames.length;
+    const minimumSamples = Math.max(20, Math.ceil(frames.length * 0.5));
 
-    if (validFrames.length === 0) {
+    if (validFrames.length < minimumSamples || validSampleRatio < 0.5) {
       return {
         baselineFocus: 60,
         baselineRelaxation: 60,
+        variabilityFocus: 0,
+        variabilityRelaxation: 0,
+        fatigueDrift: 0,
         recommendedThreshold: 50,
         confidence: 0,
+        validSampleRatio: Number(validSampleRatio.toFixed(3)),
         mode,
-        sampleCount: 0,
+        sampleCount: validFrames.length,
       };
     }
 
-    const avgFocus =
-      validFrames.reduce((acc, f) => acc + f.concentration, 0) / validFrames.length;
-    const avgRelax =
-      validFrames.reduce((acc, f) => acc + f.relaxation, 0) / validFrames.length;
+    const median = (values: number[]): number => {
+      const ordered = [...values].sort((a, b) => a - b);
+      const middle = Math.floor(ordered.length / 2);
+      return ordered.length % 2 === 0
+        ? (ordered[middle - 1] + ordered[middle]) / 2
+        : ordered[middle];
+    };
+    const summarize = (values: number[]) => {
+      const split = Math.max(1, Math.floor(values.length / 2));
+      const firstHalf = values.slice(0, split);
+      const secondHalf = values.slice(split);
+      const firstMedian = median(firstHalf);
+      const secondMedian = median(secondHalf.length > 0 ? secondHalf : firstHalf);
+      // Slightly weight the later half so the norm reflects current fatigue,
+      // while retaining enough early data to resist a transient end-of-trial dip.
+      const baseline = firstMedian * 0.35 + secondMedian * 0.65;
+      const center = median(values);
+      const mad = median(values.map((value) => Math.abs(value - center)));
+      const variability = 1.4826 * mad;
+      return {
+        baseline: Math.max(0, Math.min(100, baseline)),
+        variability,
+        drift: secondMedian - firstMedian,
+      };
+    };
 
-    const targetBaseline = mode === 'concentration' ? avgFocus : avgRelax;
-    const variance =
-      validFrames.reduce((acc, f) => {
-        const val = mode === 'concentration' ? f.concentration : f.relaxation;
-        return acc + Math.pow(val - targetBaseline, 2);
-      }, 0) / validFrames.length;
-    const stdDev = Math.sqrt(variance);
-
+    const focus = summarize(validFrames.map((frame) => frame.concentration));
+    const relaxation = summarize(validFrames.map((frame) => frame.relaxation));
+    const selected = mode === 'concentration' ? focus : relaxation;
     const recommendedThreshold = Math.max(
-      40,
-      Math.min(85, Math.round(targetBaseline - 0.5 * stdDev))
+      10,
+      Math.min(95, Math.round(selected.baseline - 0.5 * selected.variability))
     );
-    const confidence = Math.max(0.1, Math.min(1.0, 1 - stdDev / 50));
+    const coverage = Math.min(1, validSampleRatio);
+    const stability = Math.max(0.35, 1 - selected.variability / 50);
+    const confidence = Math.max(0, Math.min(1, coverage * stability));
 
     return {
-      baselineFocus: Number(avgFocus.toFixed(2)),
-      baselineRelaxation: Number(avgRelax.toFixed(2)),
+      baselineFocus: Number(focus.baseline.toFixed(2)),
+      baselineRelaxation: Number(relaxation.baseline.toFixed(2)),
+      variabilityFocus: Number(focus.variability.toFixed(2)),
+      variabilityRelaxation: Number(relaxation.variability.toFixed(2)),
+      fatigueDrift: Number(focus.drift.toFixed(2)),
       recommendedThreshold,
       confidence: Number(confidence.toFixed(2)),
+      validSampleRatio: Number(validSampleRatio.toFixed(3)),
       mode,
       sampleCount: validFrames.length,
     };
   }
+
 }
