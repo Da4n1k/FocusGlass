@@ -48,6 +48,9 @@ export interface EEGTelemetry {
   isArtifact: boolean;   // EMG / EOG artifact flag
 }
 
+/** What the overlay darkens: the whole screen or only distracting foreground windows. */
+export type DimmingScope = 'fullscreen' | 'distractors';
+
 export interface FocusGlassSettings {
   mode: 'concentration' | 'relaxation';
   deviceSource: 'simulator' | 'bluetooth';
@@ -55,6 +58,8 @@ export interface FocusGlassSettings {
   sensitivitySeconds: number;    // Moving average window [0.001, 10.0]s (default: 2.0)
   dimmingMaxOpacity: number;     // Maximum screen dimming opacity [0.05, 0.95] (default: 0.70)
   blurRadius: number;            // Maximum vignette blur [0, 32]px (default: 16)
+  dimmingScope: DimmingScope;    // 'distractors' requires the Windows desktop shell
+  distractorPatterns: string[];  // Substrings matched against process name / window title
   audioFeedbackEnabled: boolean; // Filtered pink-noise biofeedback modulation
   audioVolume: number;           // Master volume of audio feedback [0.0, 1.0] (default: 1.0)
   invertReaction: boolean;       // Dim when the metric rises ABOVE the threshold instead of below it
@@ -110,6 +115,8 @@ export interface OverlayInfo {
   count: number;
   /** Whether the display server composites windows (required for real transparency). */
   composited: boolean;
+  /** True when the Windows unified overlay/HUD window handles dimming & HUD. */
+  unifiedHud?: boolean;
 }
 
 export interface SessionStatistics {
@@ -148,6 +155,62 @@ export interface CalibrationResult {
   mode?: 'concentration' | 'relaxation';
   sampleCount?: number;
 }
+
+/** Rectangle in physical pixels. */
+export interface PixelRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Biofeedback snapshot the dashboard window publishes to the unified overlay window (~15 Hz). */
+export interface OverlayFrame {
+  opacity: number;
+  blurPx: number;
+  metric: number;
+  threshold: number;
+  mode: 'concentration' | 'relaxation';
+  scope: DimmingScope;
+  streamActive: boolean;
+  contactOk: boolean;
+  artifactFrozen: boolean;
+  isSimulator: boolean;
+  paused: boolean;
+  hudVisible: boolean;
+  activePreset: PresetState;
+  sensors: ElectrodeSignalQuality;
+  /** Set by the Rust core: screen blur is active and capture frames may be requested. */
+  blurActive?: boolean;
+}
+
+/** Foreground window reported by the Rust SetWinEventHook monitor. */
+export interface ForegroundWindowInfo {
+  exe: string;
+  title: string;
+  isDistractor: boolean;
+  matchedPattern: string | null;
+  screenRect: PixelRect | null;
+  overlayRect: PixelRect | null;
+}
+
+export interface DistractionStatus {
+  supported: boolean;
+  enabled: boolean;
+  patterns: string[];
+}
+
+export interface WindowState {
+  clickThrough: boolean;
+  overlayEnabled: boolean;
+  alwaysOnTop: boolean;
+}
+
+/** Actions the overlay HUD forwards to the dashboard window. */
+export type HudAction =
+  | { type: 'toggle_pause' }
+  | { type: 'set_preset'; preset: PresetState }
+  | { type: 'inject_artifact' };
 
 export type PresetState =
   | 'high_focus'      // 90-95% Beta dominant

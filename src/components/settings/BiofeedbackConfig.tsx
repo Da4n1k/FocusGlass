@@ -1,10 +1,32 @@
-import React from 'react';
-import { Target, Wind, Volume2, VolumeX } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Target, Wind, Volume2, VolumeX, ShieldBan } from 'lucide-react';
 import { useFocusStore } from '../../stores/useFocusStore';
 import { GlassSlider } from '../glass/GlassSlider';
 
 export const BiofeedbackConfig: React.FC = () => {
-  const { settings, activeCalibration, updateSettings } = useFocusStore();
+  const { settings, activeCalibration, updateSettings, isTauri, distractionSupported, foregroundWindow } =
+    useFocusStore();
+
+  // Edit distractor patterns as multi-line text and apply on blur so the window
+  // monitor doesn't reconfigure on every keystroke.
+  const [patternDraft, setPatternDraft] = useState(settings.distractorPatterns.join('\n'));
+  useEffect(() => {
+    setPatternDraft(settings.distractorPatterns.join('\n'));
+  }, [settings.distractorPatterns]);
+
+  const commitPatterns = () => {
+    const patterns = Array.from(
+      new Set(
+        patternDraft
+          .split('\n')
+          .map((p) => p.trim().toLowerCase())
+          .filter((p) => p.length > 0)
+      )
+    );
+    if (patterns.join('\n') !== settings.distractorPatterns.join('\n')) {
+      updateSettings({ distractorPatterns: patterns });
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -95,16 +117,92 @@ export const BiofeedbackConfig: React.FC = () => {
         />
 
         <GlassSlider
-          label="Vignette Optical Blur Radius"
+          label="Screen Blur Strength"
           value={settings.blurRadius}
           min={0}
           max={32}
           step={2}
           unit="px"
           accentColor="cyan"
-          description="Gaussian backdrop-blur radius applied around the screen periphery during mind-wandering."
+          description={
+            isTauri
+              ? 'Desktop overlay: on Windows other apps are blurred from a live screen snapshot (engaging from 4 px, hidden from capture while active); on Linux/browser backdrop-blur is used. 0 = dimming only.'
+              : 'Browser mode: Gaussian backdrop-blur radius applied to the page when focus is fully lost.'
+          }
           onChange={(val) => updateSettings({ blurRadius: val })}
         />
+      </div>
+
+      {/* Smart distraction blocking */}
+      <div className="p-3.5 rounded-xl bg-slate-900/50 border border-white/10 space-y-3">
+        <div className="flex items-center gap-2">
+          <ShieldBan className="w-4 h-4 text-[#FF6600]" />
+          <span className="text-xs font-semibold text-white">Dimming Scope</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            onClick={() => updateSettings({ dimmingScope: 'fullscreen' })}
+            className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+              settings.dimmingScope === 'fullscreen'
+                ? 'bg-[#FF6600]/20 border-[#FF6600]/50'
+                : 'bg-white/5 border-white/10 hover:border-white/20'
+            }`}
+          >
+            <span className="text-xs font-bold text-white block">Whole Screen</span>
+            <span className="text-[11px] text-slate-400">
+              Everything dims when the metric drops below the threshold.
+            </span>
+          </button>
+          <button
+            disabled={!distractionSupported}
+            onClick={() => updateSettings({ dimmingScope: 'distractors' })}
+            className={`p-2.5 rounded-xl border text-left transition-all ${
+              !distractionSupported
+                ? 'opacity-40 cursor-not-allowed bg-white/5 border-white/10'
+                : settings.dimmingScope === 'distractors'
+                ? 'bg-[#FF6600]/20 border-[#FF6600]/50 cursor-pointer'
+                : 'bg-white/5 border-white/10 hover:border-white/20 cursor-pointer'
+            }`}
+          >
+            <span className="text-xs font-bold text-white block">Distracting Apps Only</span>
+            <span className="text-[11px] text-slate-400">
+              {distractionSupported
+                ? 'Only the active window is dimmed, and only if it matches the list below.'
+                : 'Requires the FocusGlass desktop app on Windows.'}
+            </span>
+          </button>
+        </div>
+
+        {settings.dimmingScope === 'distractors' && (
+          <div className="space-y-1.5">
+            <label className="text-[11px] text-slate-300 block" htmlFor="distractor-patterns">
+              Distractor list — one entry per line, matched against the process name and window
+              title (so browser tabs like “YouTube” work too)
+            </label>
+            <textarea
+              id="distractor-patterns"
+              value={patternDraft}
+              onChange={(e) => setPatternDraft(e.target.value)}
+              onBlur={commitPatterns}
+              rows={4}
+              spellCheck={false}
+              className="w-full rounded-lg bg-black/40 border border-white/15 px-2.5 py-1.5 text-xs font-mono text-slate-100 select-text focus:outline-none focus:border-[#FF6600]/60"
+            />
+            <p className="text-[11px] text-slate-400">
+              Active window:{' '}
+              {foregroundWindow ? (
+                <span className={foregroundWindow.isDistractor ? 'text-[#FF6600]' : 'text-emerald-400'}>
+                  {foregroundWindow.exe || 'unknown'} —{' '}
+                  {foregroundWindow.isDistractor
+                    ? `distractor (“${foregroundWindow.matchedPattern ?? ''}”)`
+                    : 'allowed'}
+                </span>
+              ) : (
+                <span className="text-slate-500">waiting for the window monitor…</span>
+              )}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Inverted reaction: dim when the metric rises above the threshold */}

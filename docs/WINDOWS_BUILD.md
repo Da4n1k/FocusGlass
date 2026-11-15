@@ -49,3 +49,7 @@ Tauri автоматически подхватывает `src-tauri/tauri.windo
 использует отдельный платформенный конфиг, см. [LINUX_BUILD.md](LINUX_BUILD.md).
 
 Первая сборка Rust идёт около 5 минут (проверено 30.10: 4 мин на компиляцию + установщик NSIS 2,7 МБ), повторные — быстрее (кеш в `src-tauri\target`).
+
+Требуется Rust не ниже 1.85 (`edition = "2024"`).
+
+На машине без Visual Studio Build Tools можно собирать GNU-тулчейном: `rustup toolchain install stable-x86_64-pc-windows-gnu`, затем перед сборкой `$env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"`. Собирать именно через `npm.cmd run desktop:build` (`npx.cmd tauri build`): обычный `cargo build --release` даёт dev-бинарник, который ищет `localhost:5173`.

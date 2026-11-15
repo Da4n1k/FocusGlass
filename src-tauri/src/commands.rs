@@ -1,14 +1,33 @@
-use crate::error::AppError;
-use crate::overlay::Rect;
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use tauri::{PhysicalPosition, PhysicalSize, State, Window};
+//! Команды IPC. Все возвращают `Result<T, AppError>`.
 
-/// Whether the global Ctrl+Shift+G "restore window" shortcut is registered.
-/// It is the only way out of click-through mode, so click-through requires it.
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, State, Window};
+
+use crate::distraction::{
+    DistractionConfig, DistractionState, DistractionStatus, ForegroundWindowInfo,
+};
+use crate::error::{AppError, AppResult};
+use crate::overlay::{self, OverlayController, OverlayFrame, PixelRect, Rect};
+use crate::storage::{SessionRecord, SessionStore};
+
+/// Флаг регистрации глобального хоткея Ctrl+Shift+G для выхода из click-through.
 #[derive(Default)]
 pub struct RestoreShortcutState(pub AtomicBool);
+
+/// Click-through включается только при наличии способа вернуть управление (хоткей или трей).
+pub fn ensure_click_through_allowed(enabled: bool, can_restore: bool) -> AppResult<()> {
+    if enabled && !can_restore {
+        return Err(AppError::ClickThroughUnavailable);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Устройство (Фаза 3 не реализована: BLE честно сообщает об отсутствии SDK)
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,9 +69,8 @@ impl DeviceStatusResponse {
         }
     }
 
-    /// Maps a frontend device-source name to its status; unknown names are an error
-    /// rather than a silent fallback to the simulator.
-    pub fn for_source(source: &str) -> Result<Self, AppError> {
+    /// Преобразует имя источника сигнала в статус; неизвестные значения отвергаются с ошибкой.
+    pub fn for_source(source: &str) -> AppResult<Self> {
         match source {
             "simulator" => Ok(Self::simulator()),
             "bluetooth" => Ok(Self::bluetooth_pending()),
@@ -85,35 +103,12 @@ pub struct BrainBitScanResponse {
     pub message: String,
 }
 
-/// Click-through may only be switched on while the emergency exit shortcut is registered.
-fn ensure_click_through_allowed(enabled: bool, shortcut_registered: bool) -> Result<(), AppError> {
-    if enabled && !shortcut_registered {
-        return Err(AppError::ClickThroughUnavailable);
-    }
-    Ok(())
-}
-
 #[tauri::command]
-pub fn set_click_through(
-    window: Window,
-    enabled: bool,
-    shortcut: State<'_, RestoreShortcutState>,
-) -> Result<bool, AppError> {
-    ensure_click_through_allowed(enabled, shortcut.0.load(Ordering::SeqCst))?;
-    window
-        .set_ignore_cursor_events(enabled)
-        .map_err(|e| AppError::window("set ignore cursor events", e))?;
-    Ok(enabled)
-}
-
-#[tauri::command]
-pub fn get_device_status(
-    state: State<'_, DeviceManagerState>,
-) -> Result<DeviceStatusResponse, AppError> {
+pub fn get_device_status(state: State<'_, DeviceManagerState>) -> AppResult<DeviceStatusResponse> {
     let guard = state
         .0
         .lock()
-        .map_err(|_| AppError::StateLockPoisoned("Device"))?;
+        .map_err(|_| AppError::LockPoisoned("device state"))?;
     Ok(guard.clone())
 }
 
@@ -121,20 +116,20 @@ pub fn get_device_status(
 pub fn set_device_source(
     source: String,
     state: State<'_, DeviceManagerState>,
-) -> Result<DeviceStatusResponse, AppError> {
+) -> AppResult<DeviceStatusResponse> {
     let next = DeviceStatusResponse::for_source(&source)?;
     let mut guard = state
         .0
         .lock()
-        .map_err(|_| AppError::StateLockPoisoned("Device"))?;
+        .map_err(|_| AppError::LockPoisoned("device state"))?;
     *guard = next;
     Ok(guard.clone())
 }
 
 #[tauri::command]
-pub fn scan_brainbit_devices() -> Result<BrainBitScanResponse, AppError> {
-    // Placeholder IPC boundary for NeuroSDK2 BLE scanner (BrainBit / BrainBitBlack / BrainBit 2).
-    // Returns empty list instead of fake devices until neurosdk2 FFI is linked.
+pub fn scan_brainbit_devices() -> AppResult<BrainBitScanResponse> {
+    // Граница IPC для BLE-сканера NeuroSDK2. Пока FFI не подключён (Фаза 3),
+    // возвращаем пустой список — никаких вымышленных устройств.
     Ok(BrainBitScanResponse {
         sdk_available: false,
         devices: Vec::new(),
@@ -142,14 +137,87 @@ pub fn scan_brainbit_devices() -> Result<BrainBitScanResponse, AppError> {
     })
 }
 
-/// Logical size of the floating HUD window: the 320 px card plus its margins and glow.
+// ---------------------------------------------------------------------------
+// Окна и единый оверлей (Windows) + подгонка HUD-окна (Linux)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowState {
+    pub click_through: bool,
+    pub overlay_enabled: bool,
+    pub always_on_top: bool,
+}
+
+#[tauri::command]
+pub fn get_window_state(app: AppHandle) -> AppResult<WindowState> {
+    let (click_through, overlay_enabled) = app
+        .state::<OverlayController>()
+        .with(|s| (s.click_through, s.enabled))?;
+    Ok(WindowState {
+        click_through,
+        overlay_enabled,
+        always_on_top: overlay::main_window(&app)?.is_always_on_top()?,
+    })
+}
+
+#[tauri::command]
+pub fn set_click_through(app: AppHandle, enabled: bool) -> AppResult<bool> {
+    overlay::set_click_through(&app, enabled)
+}
+
+#[tauri::command]
+pub fn set_overlay_enabled(app: AppHandle, enabled: bool) -> AppResult<bool> {
+    overlay::set_overlay_enabled(&app, enabled)
+}
+
+/// Режим HUD для Windows: панель прячется в трей, на экране остаётся оверлей с HUD.
+#[tauri::command]
+pub fn set_hud_mode(app: AppHandle, enabled: bool) -> AppResult<bool> {
+    if enabled {
+        overlay::main_window(&app)?.hide()?;
+    } else {
+        overlay::show_dashboard(&app)?;
+    }
+    Ok(enabled)
+}
+
+#[tauri::command]
+pub fn show_dashboard(app: AppHandle) -> AppResult<()> {
+    overlay::show_dashboard(&app)
+}
+
+#[tauri::command]
+pub fn update_overlay(app: AppHandle, frame: OverlayFrame) -> AppResult<()> {
+    overlay::publish_frame(&app, frame)
+}
+
+#[tauri::command]
+pub fn get_overlay_frame(state: State<'_, OverlayController>) -> AppResult<Option<OverlayFrame>> {
+    state.with(|s| s.last_frame.clone())
+}
+
+/// Оверлей сообщает, где сейчас нарисован HUD (физические пиксели окна).
+#[tauri::command]
+pub fn set_overlay_hit_region(
+    rect: Option<PixelRect>,
+    state: State<'_, OverlayController>,
+) -> AppResult<()> {
+    if let Some(r) = rect {
+        let values = [r.x, r.y, r.width, r.height];
+        if values.iter().any(|v| !v.is_finite()) || r.width < 0.0 || r.height < 0.0 {
+            return Err(AppError::InvalidArgument(
+                "HUD hit region must be a finite rectangle".to_string(),
+            ));
+        }
+    }
+    state.with(|s| s.hud_rect = rect)
+}
+
 const HUD_WIDTH: f64 = 380.0;
 const HUD_HEIGHT: f64 = 300.0;
-/// Gap between the HUD window and the screen edge, in logical pixels.
 const HUD_MARGIN: f64 = 12.0;
 
-/// Where the HUD window goes: the top-right corner of the monitor it is on.
-/// Takes the monitor's physical origin and width and the display scale factor.
 pub fn hud_placement(monitor_x: i32, monitor_y: i32, monitor_width: u32, scale: f64) -> Rect {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
@@ -161,7 +229,6 @@ pub fn hud_placement(monitor_x: i32, monitor_y: i32, monitor_width: u32, scale: 
     let margin = (HUD_MARGIN * scale).round() as i32;
     let x = monitor_x + monitor_width as i32 - width as i32 - margin;
     Rect {
-        // A monitor narrower than the HUD must not push the window off its left edge.
         x: x.max(monitor_x),
         y: monitor_y + margin,
         width,
@@ -172,7 +239,6 @@ pub fn hud_placement(monitor_x: i32, monitor_y: i32, monitor_width: u32, scale: 
 const HUD_MIN_SIZE: (u32, u32) = (200, 120);
 const HUD_MAX_SIZE: (u32, u32) = (1200, 900);
 
-/// The webview reports its content size; it is untrusted input for a native window resize.
 pub fn clamp_hud_size(width: u32, height: u32) -> (u32, u32) {
     (
         width.clamp(HUD_MIN_SIZE.0, HUD_MAX_SIZE.0),
@@ -180,13 +246,10 @@ pub fn clamp_hud_size(width: u32, height: u32) -> (u32, u32) {
     )
 }
 
-/// New x for a window that changes width while its right edge stays where it is.
 pub fn anchor_right_edge(x: i32, old_width: u32, new_width: u32) -> i32 {
     x + old_width as i32 - new_width as i32
 }
 
-/// Keeps `rect` fully inside `monitor`; when it is larger than the monitor, the monitor's
-/// top-left corner wins.
 pub fn clamp_into(rect: Rect, monitor: Rect) -> Rect {
     let max_x = monitor.x + monitor.width as i32 - rect.width as i32;
     let max_y = monitor.y + monitor.height as i32 - rect.height as i32;
@@ -197,12 +260,6 @@ pub fn clamp_into(rect: Rect, monitor: Rect) -> Rect {
     }
 }
 
-/// Geometry of the HUD after it is resized to `width` x `height`, its right edge staying put.
-///
-/// `tracked` is what we last asked the window to be; `actual` is what the toolkit reports. The
-/// report lags behind a resize that was just requested, so it is trusted only once the window
-/// has reached the tracked size, and a different position then means the user dragged it.
-/// The result is clamped to the monitor so a bad read can never push the HUD off screen.
 pub fn plan_fit(tracked: Rect, actual: Rect, width: u32, height: u32, monitor: Rect) -> Rect {
     let base = if actual.width == tracked.width && actual.height == tracked.height {
         actual
@@ -229,52 +286,38 @@ fn monitor_rect(monitor: &tauri::Monitor) -> Rect {
     }
 }
 
-/// Window geometry remembered while the window is shrunk to the floating HUD.
 #[derive(Default)]
 pub struct HudGeometry {
-    /// The dashboard's geometry, restored when leaving HUD mode.
     pub dashboard: Option<Rect>,
-    /// The geometry we last requested for the HUD; `Some` exactly while in HUD mode.
     pub hud: Option<Rect>,
 }
 
 #[derive(Default)]
 pub struct HudRestoreState(pub Mutex<HudGeometry>);
 
-fn apply_geometry(window: &Window, rect: Rect) -> Result<(), AppError> {
-    window
-        .set_size(PhysicalSize::new(rect.width, rect.height))
-        .map_err(|e| AppError::window("resize window", e))?;
-    window
-        .set_position(PhysicalPosition::new(rect.x, rect.y))
-        .map_err(|e| AppError::window("move window", e))
+fn apply_geometry(window: &Window, rect: Rect) -> AppResult<()> {
+    window.set_size(PhysicalSize::new(rect.width, rect.height))?;
+    window.set_position(PhysicalPosition::new(rect.x, rect.y))?;
+    Ok(())
 }
 
-/// Switches the app window between the dashboard and the floating HUD. The HUD is a small
-/// window in the screen corner, never a full-screen one: a full-screen window would swallow
-/// every mouse click meant for the desktop and for other applications.
+/// Переключение окна `main` в плавающий HUD (используется на Linux без единого окна `overlay`).
 #[tauri::command]
 pub fn set_overlay_mode(
     window: Window,
     restore: State<'_, HudRestoreState>,
     enabled: bool,
-) -> Result<bool, AppError> {
+) -> AppResult<bool> {
     let mut geometry = restore
         .0
         .lock()
-        .map_err(|_| AppError::StateLockPoisoned("HUD"))?;
+        .map_err(|_| AppError::LockPoisoned("HUD"))?;
 
     if enabled {
-        // A maximized window ignores resizing.
         let _ = window.unmaximize();
-
         if geometry.dashboard.is_none() {
-            let position = window
-                .outer_position()
-                .map_err(|e| AppError::window("read window position", e))?;
-            let size = window
-                .outer_size()
-                .map_err(|e| AppError::window("read window size", e))?;
+            let position = window.outer_position()?;
+            let size = window.outer_size()?;
             geometry.dashboard = Some(Rect {
                 x: position.x,
                 y: position.y,
@@ -282,13 +325,8 @@ pub fn set_overlay_mode(
                 height: size.height,
             });
         }
-
-        let scale = window
-            .scale_factor()
-            .map_err(|e| AppError::window("read display scale", e))?;
-        let monitor = window
-            .current_monitor()
-            .map_err(|e| AppError::window("find current monitor", e))?;
+        let scale = window.scale_factor()?;
+        let monitor = window.current_monitor()?;
         let placement = match monitor {
             Some(m) => clamp_into(
                 hud_placement(m.position().x, m.position().y, m.size().width, scale),
@@ -297,6 +335,7 @@ pub fn set_overlay_mode(
             None => hud_placement(0, 0, 1920, scale),
         };
         apply_geometry(&window, placement)?;
+        let _ = window.set_always_on_top(true);
         geometry.hud = Some(placement);
     } else {
         geometry.hud = None;
@@ -307,19 +346,17 @@ pub fn set_overlay_mode(
     Ok(enabled)
 }
 
-/// Fits the floating HUD to its content, keeping its top-right corner where it currently is
-/// (wherever the window manager or the user put it). Does nothing in dashboard mode.
 #[tauri::command]
 pub fn fit_hud_window(
     window: Window,
     restore: State<'_, HudRestoreState>,
     width: u32,
     height: u32,
-) -> Result<bool, AppError> {
+) -> AppResult<bool> {
     let mut geometry = restore
         .0
         .lock()
-        .map_err(|_| AppError::StateLockPoisoned("HUD"))?;
+        .map_err(|_| AppError::LockPoisoned("HUD"))?;
     let Some(tracked) = geometry.hud else {
         return Ok(false);
     };
@@ -329,12 +366,8 @@ pub fn fit_hud_window(
         return Ok(true);
     }
 
-    let position = window
-        .outer_position()
-        .map_err(|e| AppError::window("read window position", e))?;
-    let size = window
-        .outer_size()
-        .map_err(|e| AppError::window("read window size", e))?;
+    let position = window.outer_position()?;
+    let size = window.outer_size()?;
     let actual = Rect {
         x: position.x,
         y: position.y,
@@ -342,8 +375,7 @@ pub fn fit_hud_window(
         height: size.height,
     };
     let monitor = window
-        .current_monitor()
-        .map_err(|e| AppError::window("find current monitor", e))?
+        .current_monitor()?
         .map(|m| monitor_rect(&m))
         .unwrap_or(Rect {
             x: 0,
@@ -359,45 +391,100 @@ pub fn fit_hud_window(
 }
 
 #[tauri::command]
-pub fn toggle_always_on_top(window: Window, enabled: bool) -> Result<bool, AppError> {
-    window
-        .set_always_on_top(enabled)
-        .map_err(|e| AppError::window("set always on top", e))?;
+pub fn toggle_always_on_top(app: AppHandle, enabled: bool) -> AppResult<bool> {
+    overlay::main_window(&app)?.set_always_on_top(enabled)?;
     Ok(enabled)
 }
 
 #[tauri::command]
-pub fn minimize_window(window: Window) -> Result<(), AppError> {
-    window
-        .minimize()
-        .map_err(|e| AppError::window("minimize window", e))
+pub fn minimize_window(app: AppHandle) -> AppResult<()> {
+    overlay::main_window(&app)?.minimize()?;
+    Ok(())
 }
 
 #[tauri::command]
-pub fn close_window(window: Window) -> Result<(), AppError> {
-    window
-        .close()
-        .map_err(|e| AppError::window("close window", e))
+pub fn close_window(app: AppHandle) -> AppResult<()> {
+    crate::request_quit(&app);
+    Ok(())
+}
+
+/// Завершает приложение. Фронтенд вызывает её после сохранения активной сессии.
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// История сессий (SQLite)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn sessions_upsert(record: SessionRecord, store: State<'_, SessionStore>) -> AppResult<()> {
+    store.upsert(&record)
+}
+
+#[tauri::command]
+pub fn sessions_list(
+    limit: Option<u32>,
+    store: State<'_, SessionStore>,
+) -> AppResult<Vec<SessionRecord>> {
+    store.list(limit.unwrap_or(200))
+}
+
+#[tauri::command]
+pub fn sessions_import(
+    records: Vec<SessionRecord>,
+    store: State<'_, SessionStore>,
+) -> AppResult<usize> {
+    store.import(&records)
+}
+
+#[tauri::command]
+pub fn sessions_delete(id: String, store: State<'_, SessionStore>) -> AppResult<bool> {
+    store.delete(&id)
+}
+
+#[tauri::command]
+pub fn sessions_clear(store: State<'_, SessionStore>) -> AppResult<usize> {
+    store.clear()
+}
+
+// ---------------------------------------------------------------------------
+// Умная блокировка отвлекающих приложений
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn set_distraction_config(
+    config: DistractionConfig,
+    state: State<'_, Arc<DistractionState>>,
+) -> AppResult<DistractionStatus> {
+    state.set_config(config)
+}
+
+#[tauri::command]
+pub fn get_foreground_window(
+    state: State<'_, Arc<DistractionState>>,
+) -> AppResult<Option<ForegroundWindowInfo>> {
+    state.last()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn click_through_requires_the_emergency_shortcut() {
-        assert_eq!(
-            ensure_click_through_allowed(true, false),
-            Err(AppError::ClickThroughUnavailable)
-        );
-        assert_eq!(ensure_click_through_allowed(true, true), Ok(()));
+        let err = ensure_click_through_allowed(true, false)
+            .expect_err("click-through without restore shortcut must fail");
+        assert_eq!(err.kind(), "click_through_unavailable");
+        assert!(ensure_click_through_allowed(true, true).is_ok());
     }
 
     #[test]
     fn leaving_click_through_is_always_allowed() {
-        // Releasing the window must work even when the shortcut could not be registered.
-        assert_eq!(ensure_click_through_allowed(false, false), Ok(()));
-        assert_eq!(ensure_click_through_allowed(false, true), Ok(()));
+        assert!(ensure_click_through_allowed(false, false).is_ok());
+        assert!(ensure_click_through_allowed(false, true).is_ok());
     }
 
     #[test]
@@ -414,7 +501,15 @@ mod tests {
     #[test]
     fn unknown_device_source_is_rejected_not_defaulted() {
         let err = DeviceStatusResponse::for_source("usb").expect_err("usb must be rejected");
-        assert_eq!(err, AppError::UnknownDeviceSource("usb".to_string()));
+        assert_eq!(err.kind(), "unknown_device_source");
+    }
+
+    #[test]
+    fn device_status_uses_camel_case_contract() {
+        let json = serde_json::to_value(DeviceStatusResponse::bluetooth_pending()).expect("json");
+        assert_eq!(json["connected"], false);
+        assert_eq!(json["connectionState"], "sdk_unavailable");
+        assert_eq!(json["samplingRateHz"], 250);
     }
 
     #[test]
@@ -435,7 +530,6 @@ mod tests {
 
     #[test]
     fn hud_follows_the_monitor_it_is_on() {
-        // Second monitor to the right, and one above the origin.
         let right = hud_placement(1920, 0, 2560, 1.0);
         assert_eq!(right.x, 1920 + 2560 - 380 - 12);
         let above = hud_placement(0, -1080, 1920, 1.0);
@@ -466,7 +560,6 @@ mod tests {
 
     #[test]
     fn growing_or_shrinking_keeps_the_right_edge_fixed() {
-        // 380 wide at x=1528 ends at 1908; a 450 wide window must still end there.
         let x = anchor_right_edge(1528, 380, 450);
         assert_eq!(x + 450, 1528 + 380);
         assert_eq!(anchor_right_edge(1000, 500, 300) + 300, 1500);
@@ -494,7 +587,6 @@ mod tests {
         assert_eq!(clamp_into(rect(2436, 12, 360, 269), SCREEN), rect(2200, 12, 360, 269));
         assert_eq!(clamp_into(rect(-50, -9, 360, 269), SCREEN), rect(0, 0, 360, 269));
         assert_eq!(clamp_into(rect(100, 1500, 360, 269), SCREEN), rect(100, 1331, 360, 269));
-        // Already inside: untouched. Larger than the monitor: the top-left corner wins.
         assert_eq!(clamp_into(rect(100, 100, 360, 269), SCREEN), rect(100, 100, 360, 269));
         assert_eq!(clamp_into(rect(500, 500, 3000, 2000), SCREEN), rect(0, 0, 3000, 2000));
     }
@@ -502,7 +594,6 @@ mod tests {
     #[test]
     fn fitting_keeps_the_right_edge_where_it_was_requested() {
         let tracked = rect(2168, 12, 380, 300);
-        // The toolkit already reports the requested geometry.
         let next = plan_fit(tracked, tracked, 360, 269, SCREEN);
         assert_eq!(next, rect(2188, 12, 360, 269));
         assert_eq!(next.x + 360, 2168 + 380);
@@ -510,7 +601,6 @@ mod tests {
 
     #[test]
     fn a_stale_report_of_the_old_dashboard_geometry_is_ignored() {
-        // Regression: reading the not-yet-updated window used to shift the HUD off screen.
         let tracked = rect(2168, 12, 380, 300);
         let stale = rect(660, 390, 1240, 820);
         let next = plan_fit(tracked, stale, 360, 269, SCREEN);
@@ -528,7 +618,7 @@ mod tests {
 
     #[test]
     fn fitting_never_leaves_the_monitor_even_with_a_bad_report() {
-        let tracked = rect(2400, 12, 380, 300); // already partly off the screen
+        let tracked = rect(2400, 12, 380, 300);
         let next = plan_fit(tracked, tracked, 360, 269, SCREEN);
         assert!(next.x >= 0 && next.x + next.width as i32 <= 2560);
         assert!(next.y >= 0 && next.y + next.height as i32 <= 1600);

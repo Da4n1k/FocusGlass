@@ -21,6 +21,7 @@ const testFiles = [
   resolve('tests/tier1_features/windowSync.test.ts'),
   resolve('tests/tier1_features/overlaySync.test.ts'),
   resolve('tests/tier1_features/hudFit.test.ts'),
+  resolve('tests/tier1_features/sessionPersistence.test.ts'),
 
   // Tier 2: Boundary & Corner Cases
   resolve('tests/tier2_boundaries/extremeLimits.test.ts'),

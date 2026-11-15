@@ -8,6 +8,7 @@ import { GlassSlider } from '../glass/GlassSlider';
 import { EEGOscilloscope } from './EEGOscilloscope';
 import { ElectrodeCard } from './ElectrodeCard';
 import { SessionStatsCard } from './SessionStatsCard';
+import { SessionHistoryCard } from './SessionHistoryCard';
 
 export const BentoMetricGrid: React.FC = () => {
   const {
@@ -247,8 +248,11 @@ export const BentoMetricGrid: React.FC = () => {
         </div>
       </div>
 
-      {/* Bottom Row: Full 60 FPS Canvas Oscilloscope */}
+      {/* Full 60 FPS Canvas Oscilloscope */}
       <EEGOscilloscope />
+
+      {/* Persisted session history */}
+      <SessionHistoryCard />
     </div>
   );
 };

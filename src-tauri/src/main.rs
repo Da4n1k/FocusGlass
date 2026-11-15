@@ -2,80 +2,204 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod distraction;
 mod error;
 mod overlay;
+mod screen_blur;
+mod storage;
+mod tray;
 
-use tauri::{Emitter, Manager};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-fn main() {
-    // Ctrl+Shift+G — аварийный выход из режима click-through и показ окна
-    let restore = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyG);
-    let restore_handler = restore;
+use crate::distraction::{DistractionState, ForegroundWindowInfo, EVENT_FOREGROUND_WINDOW};
+use crate::error::AppResult;
+use crate::overlay::OverlayController;
+use crate::storage::SessionStore;
 
-    tauri::Builder::default()
+/// Сколько ждать, пока фронтенд сохранит активную сессию перед выходом.
+const QUIT_GRACE_PERIOD: Duration = Duration::from_millis(1500);
+
+static QUIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Корректное завершение: просим окно `main` сохранить активную сессию и вызвать
+/// `quit_app`; если фронтенд не ответил за `QUIT_GRACE_PERIOD` — выходим сами
+/// (сессия при этом уже лежит в БД благодаря автосохранению).
+pub fn request_quit(app: &AppHandle) {
+    if QUIT_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if app
+        .emit_to(overlay::MAIN_LABEL, overlay::EVENT_QUIT_REQUESTED, ())
+        .is_err()
+    {
+        app.exit(0);
+        return;
+    }
+    let handle = app.clone();
+    let spawned = thread::Builder::new()
+        .name("focusglass-quit-watchdog".to_string())
+        .spawn(move || {
+            thread::sleep(QUIT_GRACE_PERIOD);
+            handle.exit(0);
+        });
+    if spawned.is_err() {
+        app.exit(0);
+    }
+}
+
+/// Ctrl+Shift+G: вернуть управление — выключить click-through и показать панель.
+fn restore_control(app: &AppHandle) {
+    let result = overlay::set_click_through(app, false).and_then(|_| overlay::show_dashboard(app));
+    if let Err(error) = result {
+        overlay::report_error(app, &error);
+    } else if let Some(main) = app.get_webview_window(overlay::MAIN_LABEL) {
+        let _ = main.emit("click-through-disabled", ());
+    }
+}
+
+fn setup(app: &AppHandle, restore_shortcut: Shortcut) -> AppResult<()> {
+    let db_path = app.path().app_data_dir()?.join("focusglass.sqlite3");
+    app.manage(SessionStore::open(&db_path)?);
+
+    // Регистрируем трей до глобального хоткея, чтобы проверка click-through знала,
+    // есть ли резервный способ вернуть управление помимо Ctrl+Shift+G.
+    if let Err(error) = tray::build(app) {
+        eprintln!("[FocusGlass] system tray unavailable: {error}");
+    }
+
+    #[cfg(windows)]
+    {
+        overlay::create_overlay_window(app)?;
+        overlay::spawn_hit_test_thread(app.clone())?;
+        if let Ok(mut guard) = app.state::<overlay::OverlayState>().0.lock() {
+            *guard = overlay::OverlayRegistry {
+                labels: vec![overlay::OVERLAY_LABEL.to_string()],
+                composited: true,
+                unified_hud: true,
+            };
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let registry = overlay::init_linux_overlays(app);
+        match app.state::<overlay::OverlayState>().0.lock() {
+            Ok(mut guard) => *guard = registry,
+            Err(_) => eprintln!("[FocusGlass] overlay state lock poisoned during startup"),
+        }
+    }
+
+    let distraction_state = Arc::new(DistractionState::default());
+    app.manage(Arc::clone(&distraction_state));
+    let emitter = app.clone();
+    distraction::spawn_monitor(distraction_state, move |info| {
+        if let Err(error) = emit_foreground_window(&emitter, info) {
+            eprintln!("[FocusGlass] foreground window emit failed: {error}");
+        }
+    })?;
+
+    let registered = match app.global_shortcut().register(restore_shortcut) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("[FocusGlass] failed to register Ctrl+Shift+G: {error}");
+            false
+        }
+    };
+    app.state::<commands::RestoreShortcutState>()
+        .0
+        .store(registered, Ordering::SeqCst);
+
+    Ok(())
+}
+
+fn emit_foreground_window(app: &AppHandle, info: Option<ForegroundWindowInfo>) -> AppResult<()> {
+    let info = match info {
+        Some(mut info) => {
+            let origin = overlay::overlay_window(app)?.outer_position()?;
+            info.overlay_rect = info
+                .screen_rect
+                .map(|r| r.translated(-f64::from(origin.x), -f64::from(origin.y)));
+            Some(info)
+        }
+        None => None,
+    };
+    app.emit(EVENT_FOREGROUND_WINDOW, info)?;
+    Ok(())
+}
+
+fn main() {
+    let restore_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyG);
+
+    let result = tauri::Builder::default()
         .manage(commands::DeviceManagerState::default())
         .manage(commands::RestoreShortcutState::default())
         .manage(overlay::OverlayState::default())
         .manage(commands::HudRestoreState::default())
-        .on_window_event(|window, event| {
-            // Hidden overlay windows would keep the process alive after the dashboard is closed.
-            if window.label() == "main" {
-                if let tauri::WindowEvent::CloseRequested { .. } = event {
-                    window.app_handle().exit(0);
-                }
-            }
-        })
+        .manage(OverlayController::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if shortcut == &restore_handler && event.state() == ShortcutState::Pressed {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.set_ignore_cursor_events(false);
-                            let _ = w.unminimize();
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                            let _ = w.emit("click-through-disabled", ());
-                        }
+                    if shortcut == &restore_shortcut && event.state() == ShortcutState::Pressed {
+                        restore_control(app);
                     }
                 })
                 .build(),
         )
+        .register_uri_scheme_protocol(screen_blur::CAPTURE_SCHEME, |ctx, _request| {
+            screen_blur::handle_capture_request(ctx.app_handle(), ctx.webview_label())
+        })
         .setup(move |app| {
-            // Another app may already own Ctrl+Shift+G. That must not abort startup;
-            // instead remember the outcome so click-through (which needs this
-            // shortcut as its emergency exit) can be refused.
-            let registered = match app.global_shortcut().register(restore) {
-                Ok(()) => true,
-                Err(err) => {
-                    eprintln!("FocusGlass: cannot register Ctrl+Shift+G: {err}");
-                    false
-                }
-            };
-            app.state::<commands::RestoreShortcutState>()
-                .0
-                .store(registered, std::sync::atomic::Ordering::SeqCst);
-
-            let registry = overlay::init(app.handle());
-            match app.state::<overlay::OverlayState>().0.lock() {
-                Ok(mut guard) => *guard = registry,
-                Err(_) => eprintln!("FocusGlass: overlay state lock poisoned during startup"),
-            }
+            setup(app.handle(), restore_shortcut)?;
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // Закрытие панели (Alt+F4, крестик) = выход с сохранением сессии;
+            // скрытые окна оверлея иначе удержали бы процесс живым.
+            if window.label() == overlay::MAIN_LABEL
+                && let WindowEvent::CloseRequested { api, .. } = event
+            {
+                api.prevent_close();
+                request_quit(window.app_handle());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
-            commands::set_click_through,
-            commands::set_overlay_mode,
-            commands::fit_hud_window,
             commands::get_device_status,
             commands::set_device_source,
             commands::scan_brainbit_devices,
+            commands::get_window_state,
+            commands::set_click_through,
+            commands::set_overlay_enabled,
+            commands::set_hud_mode,
+            commands::show_dashboard,
+            commands::update_overlay,
+            commands::get_overlay_frame,
+            commands::set_overlay_hit_region,
+            commands::set_overlay_mode,
+            commands::fit_hud_window,
             commands::toggle_always_on_top,
             commands::minimize_window,
             commands::close_window,
+            commands::quit_app,
+            commands::sessions_upsert,
+            commands::sessions_list,
+            commands::sessions_import,
+            commands::sessions_delete,
+            commands::sessions_clear,
+            commands::set_distraction_config,
+            commands::get_foreground_window,
             overlay::get_overlay_info,
-            overlay::set_overlay_visible
+            overlay::set_overlay_visible,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running FocusGlass tauri application");
+        .run(tauri::generate_context!());
+
+    if let Err(error) = result {
+        eprintln!("[FocusGlass] fatal: {error}");
+        std::process::exit(1);
+    }
 }

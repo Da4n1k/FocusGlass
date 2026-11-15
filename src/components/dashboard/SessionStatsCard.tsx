@@ -17,7 +17,7 @@ export const SessionStatsCard: React.FC = () => {
       ? Math.round((sessionStats.timeInFocusSeconds / sessionStats.durationSeconds) * 100)
       : 100;
 
-  const canExport = sessionStats.durationSeconds >= 1 || sessionHistory.length > 0;
+  const canExport = sessionStats.durationSeconds >= 3 || sessionHistory.length > 0;
 
   return (
     <GlassPanel variant="card" className="p-4">
@@ -37,7 +37,7 @@ export const SessionStatsCard: React.FC = () => {
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => resetSession(true)}
-            title="Save current session to local log and reset timer"
+            title="Finish the session (it is saved to history) and start a new one"
             className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white transition-colors cursor-pointer"
           >
             <RotateCcw className="w-3.5 h-3.5" />

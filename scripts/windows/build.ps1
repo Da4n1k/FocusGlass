@@ -1,4 +1,4 @@
-# Сборка FocusGlass под Windows: git pull -> npm ci -> tauri build -> копирование артефактов.
+﻿# Сборка FocusGlass под Windows: git pull -> npm ci -> tauri build -> копирование артефактов.
 # Запуск: powershell -ExecutionPolicy Bypass -File scripts\windows\build.ps1
 # Падает с ненулевым кодом, если любой шаг завершился ошибкой.
 param(

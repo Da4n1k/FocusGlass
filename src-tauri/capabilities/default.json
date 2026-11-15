@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permissions for FocusGlass overlay and dashboard",
-  "windows": ["main"],
+  "description": "Default permissions for FocusGlass dashboard (main) and overlay window (overlay)",
+  "windows": ["main", "overlay"],
   "permissions": [
     "core:default",
     "core:window:allow-set-ignore-cursor-events",

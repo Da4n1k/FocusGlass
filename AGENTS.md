@@ -5,7 +5,7 @@
 > **Client / Case Origin**: ООО НМФ «Нейротех» (Таганрог, `neurotech.ru`)  
 > **Target Hardware**: Беспроводной нейроинтерфейс «BrainBit» (`brainbit.com` / `sdk.brainbit.com`)  
 > **Target Primary OS**: Windows 11 (с поддержкой локального dev-окружения на macOS)  
-> **Version**: 1.0.0-PROD  
+> **Version**: 1.0.0 (совпадает с `package.json`, `Cargo.toml` и `tauri.conf.json`; интерфейс берёт версию из `package.json`)  
 
 ---
 
@@ -99,25 +99,39 @@ $$I_c(t) = \frac{P_\beta(t)}{P_\theta(t) + P_\alpha(t)} \cdot K_{\text{calib}}$$
 | Компонент | Технология | Обоснование выбора |
 |---|---|---|
 | **Десктопный движок** | **Tauri v2 (Rust)** | Потребление памяти $<40$ МБ (в 8-10 раз легче Electron), мгновенный запуск, прямое управление Win32 API окнами. |
-| **Ядро бэкенда** | **Rust (Edition 2024)** | Потокобезопасная обработка 250 Гц потока данных, `libloading` для работы с DLL без C++ рантайма, ультранизкая задержка. |
+| **Ядро бэкенда** | **Rust (Edition 2024)** | Неблокирующий обмен сообщениями монитора активных окон через `crossbeam-channel`, типизированные ошибки (`thiserror`), SQLite (`rusqlite`), WinAPI (`windows`) / GTK (`gtk` на Linux). `libloading` для работы с DLL понадобится в Фазе 3 и пока не подключён. |
 | **UI Фреймворк** | **React 19 + TypeScript** | Декларативное управление состоянием, React Compiler, компонентная модульность, строгая типизация. |
 | **Сборщик фронтенда** | **Vite 6** | Мгновенный HMR (hot module replacement) $<50$ мс, идеальный dev-experience. |
-| **Дизайн-система** | **Tailwind CSS v4 + Liquid Glass** | Аппаратно-ускоренные фильтры размытия (`backdrop-filter`), кастомные glassmorphism токены, спекулярные блики. |
+| **Дизайн-система** | **Tailwind CSS v4 + Liquid Glass** | Аппаратно-ускоренные фильтры размытия (`backdrop-filter`), кастомные glassmorphism токены, спекулярные блики. Токены заданы в `src/index.css` (`@theme`), файла `tailwind.config.ts` нет. |
 | **Осциллограф ЭЭГ** | **HTML5 Canvas 2D (60 FPS)** | Прямой рендеринг волн 4 каналов без нагрузки на React Virtual DOM. |
 | **Иконки** | **Lucide React** | Минималистичный премиальный набор векторных иконок. |
 | **Интеграция с железом** | **NeuroSDK2 (C API / FFI)** | Официальный SDK BrainBit (`neurosdk2.dll`), кроссплатформенный Bluetooth LE слой. |
-| **Генератор симуляции** | **In-Engine Synthetic EEG (Rust/TS)** | Автономный математический симулятор 250 Гц для презентации без физического ободка. |
+| **Генератор симуляции** | **In-Engine Synthetic EEG (TypeScript)** | Автономный математический симулятор 250 Гц для презентации без физического ободка. |
 
 ### 3.2 Архитектура окон в Tauri v2
-Приложение FocusGlass функционирует в двух режимах (двухоконная или адаптивная архитектура):
+Один и тот же фронтенд-бандл выбирает корневой компонент по метке окна (`src/main.tsx`), поддерживая два режима работы нативных окон (`OverlayInfo.unifiedHud`):
 
-1. **Overlay Window (`overlay`)**:
-   - Флаги: `transparent: true`, `decorations: false`, `alwaysOnTop: true`, `fullscreen: false` (или растянут на экран).
-   - Сквозной клик: `window.set_ignore_cursor_events(true)` (на Windows активирует `WS_EX_TRANSPARENT | WS_EX_LAYERED`).
-   - Отображает: фоновый виньеточный светофильтр затемнения + компактный плавающий HUD («шкала-столбик»).
-2. **Dashboard / Settings Window (`main`)**:
-   - Полнофункциональная панель управления: настройка порогов, выбор устройства (Bluetooth vs Simulator), калибровка, 4-канальный осциллограф, аналитика сессии.
-   - Вызывается горячей клавишей (`Ctrl+Shift+G` / `Cmd+Shift+G`) или через системный трей.
+1. **Dashboard Window (`main`)** — объявлено в `tauri.conf.json`:
+   - Панель управления: пороги, выбор источника, калибровка, плеер записей ЭЭГ, осциллограф, история сессий.
+   - Единственный владелец БОС-движка и хранилища Zustand. На Windows (~15 FPS) публикует кадр `OverlayFrame` командой `update_overlay`; на Linux также публикует `fg://state` для окон `overlay-*` через `overlayPublisher.ts`.
+   - Закрытие окна (или пункт трея «Выход») инициирует `quit-requested` / `quit()`: фронтенд сохраняет активную сессию в SQLite и вызывает `quit_app` (сторожевой таймер 1,5 с завершает процесс, если фронтенд не ответил).
+   - Возврат на передний план: `Ctrl+Shift+G`, трей или кнопка в HUD.
+2. **Overlay Window**:
+   - **Windows (`overlay`, `unifiedHud: true`)** — создаётся в Rust (`overlay.rs`): прозрачное, без рамки, поверх всех окон, без фокуса и без значка в панели задач, на весь основной монитор. Своего движка нет: `OverlayApp` рисует светофильтр и `FocusBarHUDView` по событиям `overlay-frame`, `foreground-window`, `click-through-changed`. Фоновый поток ~60 Гц проверяет положение курсора относительно `set_overlay_hit_region` и переключает `set_ignore_cursor_events` (при активном click-through HUD тоже прозрачен для кликов).
+   - **Linux (`overlay-*`, `unifiedHud: false`)** — композитные оверлей-окна на всех мониторах, принимающие состояние через `fg://state`, в то время как плавающий `FocusBarHUD` отображается в адаптируемом окне `main`.
+3. **Трей** (`tray.rs`, Windows): открыть панель, включить/выключить оверлей, click-through HUD, выход.
+
+Команды, меняющие состояние окна, возвращают фактическое состояние (`Result<T, AppError>`); переключатели в UI обновляются по факту ответа, а ошибки отображаются уведомлением.
+
+В обычном браузере (`npm run dev` без Tauri) второго окна нет: светофильтр и HUD рисуются внутри страницы (`InPageOverlay`).
+
+### 3.3 Размытие окон других программ (Windows)
+CSS `backdrop-filter` размывает только содержимое самого WebView, а эффекты DWM на Windows 11 непригодны (Acrylic — непрозрачная серая стена, Blur — чёрный экран). Поэтому на Windows размытие сделано через захват экрана (`screen_blur.rs`):
+
+- `screen_blur.rs` снимает область под оверлеем через GDI с уменьшением в 6 раз и отдаёт 24-битный BMP по адресу `http://fgcap.localhost/frame`. Ответ получает только окно `overlay` (иначе 403) и только пока размытие активно (иначе 409).
+- Размытие включается при расчётном радиусе ≥ 4 px и выключается ниже 2 px (гистерезис), только в режиме затемнения всего экрана.
+- `BlurBackdrop` в `OverlayApp.tsx` запрашивает снимок каждые 200 мс, рисует его на canvas во весь экран и применяет `filter: blur()` с текущим радиусом.
+- Пока размытие активно, окно оверлея исключено из захвата (`WDA_EXCLUDEFROMCAPTURE`), чтобы не попадать в собственный снимок. Побочный эффект: на скриншотах и при демонстрации экрана оверлей в эти моменты не виден. На Linux и в браузере применяется CSS `backdrop-filter`.
 
 ---
 
@@ -163,148 +177,193 @@ FocusGlass опирается на официальный бренд-код пр
 
 ## 5. Repository Layout & File Conventions (Структура репозитория)
 
+Структура отражает фактическое состояние репозитория. Модули, которых ещё нет, помечены `(Фаза 3, не создан)`.
+
 ```
 FocusGlass/
 ├── AGENTS.md                         # Данный манифест архитектуры и инструкций
 ├── README.md                         # Руководство пользователя и быстрого старта
-├── package.json                      # Корневой npm манифест (React, Vite, Tailwind)
+├── package.json                      # npm-манифест; version — единственный источник версии UI
 ├── tsconfig.json                     # Строгая конфигурация TypeScript
 ├── tsconfig.node.json
-├── vite.config.ts                    # Конфигурация Vite 6 с интеграцией Tauri
-├── tailwind.config.ts                # Токены Liquid Glass и BrainBit палитры
-├── index.html                        # Точка входа веб-приложения
+├── vite.config.ts                    # Vite 6 (main + overlay); подставляет __APP_VERSION__
+├── index.html                        # Точка входа веб-приложения (main и Windows overlay)
+├── overlay.html                      # Точка входа композитного Linux-оверлея (overlay-*)
+├── docs/WINDOWS_BUILD.md             # Сборка под Windows (NSIS, GNU/MSVC)
+├── docs/LINUX_BUILD.md               # Сборка под Linux (DEB / AppImage)
+├── docs/EEG_SIGNAL_QUALITY.md        # Методика проверки сопротивления и артефактов
+├── scripts/windows/build.ps1         # Скрипт сборки под Windows (NSIS)
 │
 ├── src/                              # Исходный код фронтенда (React 19)
-│   ├── main.tsx                      # Инициализация React root
-│   ├── App.tsx                       # Главный роутер / контроллер режимов (HUD vs Dashboard)
-│   ├── index.css                     # Глобальные CSS переменные Liquid Glass
+│   ├── main.tsx                      # Выбор корня по метке окна: App (main) или OverlayApp (overlay)
+│   ├── App.tsx                       # Окно панели управления (и весь интерфейс в браузерном режиме)
+│   ├── OverlayApp.tsx                # Окно оверлея на Windows: светофильтр, размытие и HUD
+│   ├── index.css                     # Tailwind v4 (@theme) и CSS-токены Liquid Glass
+│   ├── vite-env.d.ts
 │   │
-│   ├── assets/                       # Фирменные медиа-ресурсы BrainBit
-│   │   ├── brainbit-logo.svg         # Официальный векторный логотип BrainBit
-│   │   ├── neurotech-logo.png        # Логотип ООО НМФ «Нейротех»
-│   │   ├── headband-hero.webp        # Изометрический рендер нейрообруча
-│   │   └── electrode-diagram.webp    # Схема расположения T3, T4, O1, O2
+│   ├── assets/                       # Фирменные медиа-ресурсы BrainBit и Нейротех
 │   │
 │   ├── components/
 │   │   ├── glass/                    # Атомарные компоненты Liquid Glass
-│   │   │   ├── GlassPanel.tsx        # Базовый стеклянный контейнер со спекуляром
-│   │   │   ├── GlassButton.tsx       # Фирменная кнопка с неоновым градиентом
-│   │   │   ├── GlassSlider.tsx       # Слайдер настройки порогов и прозрачности
-│   │   │   └── GlassBadge.tsx        # Бейджи статуса устройства и артефактов
-│   │   │
-│   │   ├── hud/                      # Floating HUD для работы поверх всех окон
-│   │   │   ├── FocusBarHUD.tsx       # «Шкала-столбик» с живой метрикой фокуса
+│   │   ├── hud/
+│   │   │   ├── FocusBarHUD.tsx       # FocusBarHUDView + обёртка FocusBarHUD
 │   │   │   └── CompactElectrodePill.tsx # Микро-индикатор контакта 4 каналов
-│   │   │
-│   │   ├── overlay/                  # Экранный БОС-светофильтр
-│   │   │   └── BiofeedbackOverlay.tsx# Динамическое затемнение/виньетка экрана
-│   │   │
-│   │   ├── dashboard/                # Панель мониторинга и телеметрии
-│   │   │   ├── BentoMetricGrid.tsx   # Bento-сетка метрик фокуса и расслабления
+│   │   ├── overlay/
+│   │   │   ├── BiofeedbackOverlay.tsx# DimLayer + BiofeedbackOverlay
+│   │   │   └── OverlayLayer.tsx      # Чистый слой светофильтра (Linux + полноэкранный DimLayer)
+│   │   ├── dashboard/
+│   │   │   ├── BentoMetricGrid.tsx   # Bento-сетка метрик, персональная калибровка, история
 │   │   │   ├── EEGOscilloscope.tsx   # 60 FPS Canvas 2D осциллограф 4 каналов
-│   │   │   ├── ElectrodePlacementCard.tsx # 3D/2D интерактивная карта электродов
-│   │   │   └── SessionStatsCard.tsx  # Текущая длительность фокус-сессии и тренды
-│   │   │
-│   │   └── settings/                 # Панель настроек
-│   │       ├── SettingsModal.tsx     # Модальное окно конфигурации
-│   │       ├── DeviceSelector.tsx    # Выбор: Физический BrainBit BLE vs Симулятор
-│   │       └── BiofeedbackConfig.tsx # Пороги (%), чувствительность, макс. затемнение
+│   │   │   ├── ElectrodeCard.tsx     # Контакт и сопротивление электродов
+│   │   │   ├── SessionStatsCard.tsx  # Текущая сессия
+│   │   │   └── SessionHistoryCard.tsx# История (SQLite), экспорт CSV
+│   │   └── settings/
+│   │       ├── SettingsModal.tsx     # Модальное окно конфигурации, калибровка, плеер ЭЭГ, хоткеи
+│   │       ├── DeviceSelector.tsx    # Симулятор vs BrainBit BLE
+│   │       └── BiofeedbackConfig.tsx # Пороги, затемнение, инверсия, отвлекатели, аудио-БОС
 │   │
 │   ├── services/                     # Сервисный слой и математика
-│   │   ├── eegTypes.ts               # Типы данных телеметрии, спектров и настроек
-│   │   ├── simulationEngine.ts       # 250 Гц математический симулятор ЭЭГ + хоткеи 1-4
-│   │   └── tauriBridge.ts            # Безопасная прослойка вызовов Tauri IPC
+│   │   ├── eegTypes.ts               # Контракты данных (см. раздел 6)
+│   │   ├── settingsSchema.ts         # Значения по умолчанию и валидация настроек
+│   │   ├── biofeedbackEngine.ts      # Скользящее сглаживание, дефицит, статистика сессии
+│   │   ├── personalCalibration.ts    # Индивидуальная калибровка базового уровня (10 с / 30 с)
+│   │   ├── eegRecordingPlayer.ts     # Плеер предзаписанных ЭЭГ в CSV/TSV/TXT/JSON
+│   │   ├── eegSignalProcessor.ts     # Биполярные отведения, режектор 50 Гц, Гёрцель, индексы
+│   │   ├── simulationEngine.ts       # TS-симулятор 250 Гц, приём внешних потоков, хоткеи 1–5
+│   │   ├── sessionRepository.ts      # История сессий: SQLite (Tauri) или localStorage (браузер)
+│   │   ├── overlayPublisher.ts       # Публикация fg://state для Linux overlay-*
+│   │   ├── overlaySync.ts / windowSync.ts / hudFit.ts
+│   │   ├── audioFeedback.ts          # Аудио-БОС: синтезатор фильтрованного розового шума
+│   │   └── tauriBridge.ts            # Защитная прослойка вызовов Tauri IPC
 │   │
-│   └── stores/                       # Реактивное состояние
-│       └── useFocusStore.ts          # Zustand/Context хранилище телеметрии и настроек
+│   └── stores/
+│       └── useFocusStore.ts          # Zustand-хранилище: телеметрия, настройки, сессии, окна
 │
-├── src-tauri/                        # Бэкенд на Rust (Tauri v2)
-│   ├── Cargo.toml                    # Зависимости Rust (tauri v2, serde, libloading)
-│   ├── tauri.conf.json               # Манифест окон, прозрачности и прав доступа
+├── src-tauri/                        # Бэкенд на Rust (Tauri v2, edition 2024)
+│   ├── Cargo.toml                    # tauri, thiserror, crossbeam-channel, rusqlite, windows / gtk
+│   ├── tauri.conf.json               # Базовый манифест (main, CSP, бандл)
+│   ├── tauri.windows.conf.json       # Настройки NSIS для Windows
+│   ├── tauri.linux.conf.json         # Настройки DEB / AppImage для Linux
 │   ├── capabilities/
-│   │   └── default.json              # Права доступа (set-ignore-cursor-events)
+│   │   ├── default.json              # Права окон main и overlay
+│   │   └── overlay.json              # Права композитных Linux-окон overlay-*
 │   │
 │   └── src/
-│       ├── main.rs                   # Точка входа Tauri приложения
-│       ├── commands.rs               # Команды IPC: клик-сквозь, статус устройства
-│       └── bci/                      # Драйвер BrainBit и математика
-│           ├── mod.rs
-│           ├── neurosdk_ffi.rs       # Runtime FFI обертка над neurosdk2.dll
-│           └── mock_generator.rs     # Симулятор на стороне Rust (fallback)
+│       ├── main.rs                   # Точка входа, хоткей Ctrl+Shift+G, корректный выход
+│       ├── error.rs                  # AppError / AppResult — единый тип ошибок
+│       ├── commands.rs               # Команды IPC (Result<T, AppError>)
+│       ├── overlay.rs                # Windows overlay + hit-test И Linux overlay-*
+│       ├── screen_blur.rs            # Снимок экрана для размытия чужих окон (схема fgcap)
+│       ├── tray.rs                   # Системный трей
+│       ├── distraction.rs            # SetWinEventHook: активное окно и список отвлекателей
+│       ├── storage.rs                # SQLite: история сессий
+│       └── bci/neurosdk_ffi.rs       # (Фаза 3, не создан) FFI-обёртка над neurosdk2.dll
 │
-└── tests/                            # Тестовый набор
-    ├── telemetry.test.ts             # Тесты математики БОС и сглаживания
-    ├── settings.test.ts              # Тесты персистентности настроек
-    └── simulation.test.ts            # Тесты генерации 250 Гц потока
+└── tests/                            # Тесты фронтенда (node:test, запуск: npm test)
+    ├── runner.ts                     # Реестр из 22 тестовых наборов
+    ├── tsLoader.mjs                  # Загрузчик TypeScript для Node
+    ├── contracts/  fixtures/  harness/
+    ├── tier1_features/               # Функции: БОС, DSP, калибровка, плеер, окна, SQLite
+    ├── tier2_boundaries/             # Граничные случаи
+    ├── tier3_combinations/           # Сочетания функций
+    └── tier4_scenarios/              # Сценарии целиком (помодоро-сессия)
 ```
+
+Тесты Rust лежат рядом с кодом (`#[cfg(test)]`), запуск: `cd src-tauri && cargo test`.
 
 ---
 
 ## 6. TypeScript Data Contracts & Interfaces (Интерфейсные контракты)
 
+Источник истины — `src/services/eegTypes.ts`. Ниже — ключевые контракты в том виде, в каком они есть в коде.
+
 ### 6.1 Телеметрия ЭЭГ и состояние электродов
 ```typescript
-/** Потоковый пакет данных ЭЭГ с частотой 250 Гц */
-export interface EEGTelemetryPacket {
-  timestamp: number;                  // Временная метка (мс)
-  rawChannels: {
-    t3: number;                       // Микровольты (мкВ) [-500 .. +500]
-    t4: number;
-    o1: number;
-    o2: number;
-  };
-  spectrum: {
-    delta: number;                    // 0.5 - 4 Гц (мкВ^2 / Гц)
-    theta: number;                    // 4 - 8 Гц
-    alpha: number;                    // 8 - 13 Гц
-    beta: number;                     // 14 - 30 Гц
-    gamma: number;                    // > 30 Гц
-  };
-  metrics: {
-    concentration: number;            // Индекс фокуса: 0 - 100%
-    relaxation: number;               // Индекс расслабления: 0 - 100%
-  };
-  electrodes: {
-    t3: ElectrodeStatus;              // Качество контакта
-    t4: ElectrodeStatus;
-    o1: ElectrodeStatus;
-    o2: ElectrodeStatus;
-  };
-  isArtifact: boolean;                // Флаг детекции моргания или сжатия мышц
+export interface RawEEGChannels { t3: number; t4: number; o1: number; o2: number } // мкВ
+
+export interface ElectrodeSignalQuality { t3: boolean; t4: boolean; o1: boolean; o2: boolean }
+
+/** Сопротивление электрод-кожа, кОм; null — разомкнутая цепь. */
+export interface ChannelResistanceKOhm {
+  t3: number | null; t4: number | null; o1: number | null; o2: number | null;
 }
 
-export type ElectrodeStatus = 'good' | 'fair' | 'poor' | 'disconnected';
+export interface SpectralBandPowers {
+  theta: number; // относительная мощность, % (4–7 Гц)
+  alpha: number; // 8–13 Гц
+  beta: number;  // 14–30 Гц
+}
+
+/** Один отсчёт 250 Гц после обработки. */
+export interface EEGTelemetry {
+  timestamp: number;                 // мс
+  rawChannels: RawEEGChannels;
+  concentration: number;             // 0–100 %
+  relaxation: number;                // 0–100 %
+  signalQuality: ElectrodeSignalQuality;
+  resistanceKOhm?: ChannelResistanceKOhm;
+  spectrum?: SpectralBandPowers;
+  isArtifact: boolean;               // артефакт EOG/EMG
+}
+
+/** Сырой отсчёт от устройства (индексы считает фронтенд). */
+export interface RawBrainBitPacket {
+  timestamp?: number;
+  rawChannels: RawEEGChannels;
+  signalQuality?: ElectrodeSignalQuality;
+  resistanceKOhm?: ChannelResistanceKOhm;
+}
 ```
 
 ### 6.2 Конфигурация приложения и БОС
 ```typescript
 export interface FocusGlassSettings {
-  // Режим БОС-тренировки
-  trainingMode: 'concentration' | 'relaxation';
-  
-  // Источник данных
+  mode: 'concentration' | 'relaxation';
   deviceSource: 'simulator' | 'bluetooth';
-  selectedDeviceId?: string;
-  
-  // Пороговые значения и математика
-  threshold: number;                  // Целевой порог (по умолчанию 60%)
-  sensitivitySeconds: number;         // Окно сглаживания: 1.0 - 5.0 секунд
-  
-  // Параметры экранного оверлея
-  dimmingMaxOpacity: number;          // Максимальная плотность затемнения: 0.1 - 0.9 (дефолт 0.75)
-  blurRadiusPx: number;               // Радиус виньеточного размытия: 0 - 32px
-  invertReaction: boolean;            // Инвертировать реакцию (для расслабления)
-  
-  // Обратная связь
-  audioFeedbackEnabled: boolean;      // Аудио-БОС (слайд 6 презентации)
-  audioVolume: number;                // 0.0 - 1.0
-  
-  // Внешний вид Liquid Glass
-  glassOpacity: number;               // Базовая прозрачность панелей: 0.2 - 0.85
-  accentColor: 'orange' | 'cyan' | 'violet';
-  compactHudPosition: 'top-right' | 'top-center' | 'left-dock';
+  threshold: number;                      // целевой порог, % [10, 95], по умолчанию 60
+  sensitivitySeconds: number;             // окно сглаживания, с (по умолчанию 2.0)
+  dimmingMaxOpacity: number;              // макс. плотность затемнения [0.05, 0.95], по умолчанию 0.70
+  blurRadius: number;                     // сила размытия [0, 32] px (см. раздел 3.3)
+  dimmingScope: 'fullscreen' | 'distractors';
+  distractorPatterns: string[];           // подстроки имени процесса / заголовка окна
+  invertReaction: boolean;                // инверсия порога (затемнять при превышении)
+  audioFeedbackEnabled: boolean;
+  audioVolume: number;                    // макс. громкость аудио-БОС [0.0, 1.0]
+  glassOpacity: number;                   // прозрачность панелей [0.1, 1.0]
 }
 ```
+
+### 6.3 Обмен между окнами и с Rust-ядром
+```typescript
+/** Кадр БОС: окно main -> Rust (команда update_overlay) -> окно overlay (событие overlay-frame). */
+export interface OverlayFrame {
+  opacity: number; blurPx: number; metric: number; threshold: number;
+  mode: 'concentration' | 'relaxation';
+  scope: 'fullscreen' | 'distractors';
+  streamActive: boolean; contactOk: boolean; artifactFrozen: boolean;
+  isSimulator: boolean; paused: boolean; hudVisible: boolean;
+  activePreset: PresetState;
+  sensors: ElectrodeSignalQuality;
+}
+
+/** Активное окно Windows (событие foreground-window). */
+export interface ForegroundWindowInfo {
+  exe: string; title: string;
+  isDistractor: boolean; matchedPattern: string | null;
+  screenRect: PixelRect | null;   // физические пиксели экрана
+  overlayRect: PixelRect | null;  // относительно окна оверлея
+}
+
+/** Итог сессии — строка таблицы sessions в SQLite. */
+export interface SessionRecord extends SessionStatistics {
+  id: string; startedAt: string; endedAt: string;
+  mode: 'concentration' | 'relaxation';
+  deviceSource: 'simulator' | 'bluetooth';
+  threshold: number;
+}
+```
+
+Ошибки команд приходят объектом `{ kind, message }` (сериализация `AppError`); `tauriBridge.ts` превращает их в `BridgeError`.
 
 ---
 
@@ -346,18 +405,18 @@ export interface FocusGlassSettings {
 
 - [x] **Шаг 1.1 — Спецификация и документация**:
   - Создание мастер-документа `AGENTS.md` со всем стеком, контрактами и архитектурой.
-- [ ] **Шаг 1.2 — Инициализация проекта и стек Liquid Glass**:
+- [x] **Шаг 1.2 — Инициализация проекта и стек Liquid Glass**:
   - Инициализация React 19 + TypeScript + Vite 6 + Tailwind CSS v4.
   - Интеграция фирменной дизайн-системы Liquid Glass (токены размытия, спекулярные блики, цвета `#FF6600` и `#00D2FF`).
   - Подключение официальных ассетов BrainBit (векторный логотип, рендеры нейрообруча, схемы электродов).
-- [ ] **Шаг 1.3 — Экранный БОС-оверлей и плавающий HUD**:
+- [x] **Шаг 1.3 — Экранный БОС-оверлей и плавающий HUD**:
   - Полноэкранный адаптивный компонент затемнения экрана с плавной интерполяцией прозрачности.
   - Компактный плавающий индикатор («шкала-столбик») уровня концентрации с анимированным пульсирующим свечением.
-- [ ] **Шаг 1.4 — Панель управления и настроек (Settings Dashboard)**:
+- [x] **Шаг 1.4 — Панель управления и настроек (Settings Dashboard)**:
   - Панель параметров БОС: режим тренировки (Концентрация / Релаксация), регулятор целевого порога (%), чувствительность реакции (секунды), максимальная плотность затемнения экрана.
   - 4-канальный высокоточный Canvas-осциллограф волн ЭЭГ (T3, T4, O1, O2).
   - Индикатор качества прилегания 4 электродов и уровня заряда аккумулятора.
-- [ ] **Шаг 1.5 — Движок интерактивной симуляции (Presentation Simulator Engine)**:
+- [x] **Шаг 1.5 — Движок интерактивной симуляции (Presentation Simulator Engine)**:
   - Реалистичная математическая генерация 250 Гц потока ЭЭГ с воспроизведением физиологических ритмов ($\alpha, \beta, \theta$).
   - Горячие клавиши для мгновенного переключения состояний во время доклада:
     - `Клавиша 1` — **Высокая концентрация** (90%+, экран кристально чист);
@@ -365,17 +424,16 @@ export interface FocusGlassSettings {
     - `Клавиша 3` — **Потеря фокуса / прокрастинация** (35-40%, запуск затемнения экрана);
     - `Клавиша 4` — **Артефакт моргания / сжатия челюсти** (временная фиксация состояния).
 
-### Фаза 2: Сборка и упаковка под Windows 11 (Tauri MSI/EXE)
-*Цель: Развертывание и сборка нативного Windows 11 дистрибутива.*
+### Фаза 2: Сборка и упаковка под Windows 11 и Linux (Tauri EXE / DEB / AppImage)
+*Цель: Развертывание и сборка нативного дистрибутива.*
 
-- [ ] **Шаг 2.1 — Настройка окружения Windows 11**:
-  - Развертывание Windows 11 на VPS (`51.250.70.150`), активация RDP, установка Rust toolchain, Node.js и WebView2 runtime.
-- [ ] **Шаг 2.2 — Конфигурация Tauri v2 для Windows 11**:
-  - Настройка `src-tauri/tauri.conf.json` с поддержкой прозрачности и сквозного клика (`WS_EX_TRANSPARENT`).
-  - Настройка разрешений `capabilities/default.json`.
-- [ ] **Шаг 2.3 — Компиляция и сборка установщика**:
-  - Генерация автономного `.exe` и дистрибутива `.msi`.
-  - Тестирование прозрачности, размытия Mica/Acrylic и поведения оверлея поверх реальных окон Windows 11.
+- [x] **Шаг 2.1 — Настройка окружения Windows 11**:
+  - Развертывание Windows 11 на тестовой VPS (адрес — у владельца проекта), активация RDP, установка Rust toolchain, Node.js и WebView2 runtime.
+- [x] **Шаг 2.2 — Конфигурация Tauri v2 для Windows 11 и Linux**:
+  - Настройка `src-tauri/tauri.conf.json`, `tauri.windows.conf.json`, `tauri.linux.conf.json`, прав `capabilities/default.json` и `capabilities/overlay.json`.
+- [x] **Шаг 2.3 — Компиляция и сборка установщика**:
+  - Генерация автономного `.exe` и установщика NSIS (`*-setup.exe`), а также пакетов DEB / AppImage на Linux.
+  - Тестирование прозрачности, размытия и поведения оверлея поверх реальных окон Windows 11. Итог проверки: Mica/Acrylic для размытия чужих окон непригодны, применён захват экрана (раздел 3.3).
 
 ### Фаза 3: Аппаратная интеграция с BrainBit NeuroSDK2
 *Цель: Прямое подключение к физическому ободку BrainBit по Bluetooth LE.*
@@ -388,21 +446,19 @@ export interface FocusGlassSettings {
   - Мониторинг сопротивления электродов T3, T4, O1, O2 перед началом сессии.
 - [ ] **Шаг 3.3 — Подключение Emotions SDK**:
   - Расчет реальных индексов концентрации и релаксации на живых данных.
-  - Калибровочный 30-секундный протокол определения индивидуального базового уровня.
+  - Индивидуальная калибровка базового уровня (10 с / 30 с) уже реализована в `personalCalibration.ts` для симулятора/записей и готова для живого потока.
 
-### Фаза 4: Расширенные возможности БОС и геймификация (Слайд 6 кейса)
+### Фаза 4: Расширенные возможности БОС (Слайд 6 кейса)
 *Цель: Реализация бонусных задач, предложенных в техническом задании Нейротех.*
 
-- [ ] **Шаг 4.1 — Аудио-БОС (Звуковое сопровождение)**:
-  - Модуляция громкости или частоты фонового шума природы (дождь, шелест листвы, бинауральные ритмы) в зависимости от текущего фокуса.
-- [ ] **Шаг 4.2 — Умная блокировка приложений-отвлекателей**:
+- [x] **Шаг 4.1 — Аудио-БОС (Звуковое сопровождение)**:
+  - Синтез фильтрованного розового шума через Web Audio API с регулировкой `audioVolume`: громкость плавно нарастает при дефиците фокуса.
+- [x] **Шаг 4.2 — Умная блокировка приложений-отвлекателей**:
   - Мониторинг активного окна в Windows 11 через `SetWinEventHook`.
-  - Выборочное затемнение только нецелевых окон (мессенджеры, соцсети) при падении рабочей концентрации.
-- [ ] **Шаг 4.3 — Игровые элементы и ментальный баланс**:
-  - Интерактивный виджет удержания равновесия виртуального объекта силой концентрации.
-- [ ] **Шаг 4.4 — История тренировок и база данных**:
-  - Внутренняя база данных SQLite для сохранения сессий пользователя.
-  - Экспорт аналитики в форматы CSV и EDF (European Data Format).
+  - Выборочное затемнение только нецелевых окон (мессенджеры, соцсети) при дефиците фокуса.
+- [x] **Шаг 4.3 — История тренировок и база данных**:
+  - Внутренняя база данных SQLite для сохранения сессий пользователя (`focusglass.sqlite3`).
+  - Экспорт аналитики в формат CSV.
 
 ---
 
@@ -418,7 +474,7 @@ npm run dev
 # Открыть в браузере: http://localhost:5173
 
 # 3. Запуск десктопного окружения Tauri v2
-cargo tauri dev
+npm run desktop:dev
 ```
 
 ### 9.2 Сборка продакшн-бандла
@@ -426,30 +482,31 @@ cargo tauri dev
 # Сборка оптимизированного веб-интерфейса
 npm run build
 
-# Компиляция нативного приложения Tauri (.exe / .app / .msi)
-cargo tauri build
+# Компиляция нативного приложения и установщика Tauri (Windows: NSIS .exe; Linux: DEB / AppImage)
+npm run desktop:build
 ```
 
 ### 9.3 Тестирование и верификация качества
 ```bash
-# Запуск юнит-тестов (математика спектров, БОС-сглаживание, контракты)
+# Запуск юнит-тестов (математика спектров, БОС-сглаживание, контракты, SQLite)
 npm run test
 
 # Проверка типизации TypeScript
 npx tsc --noEmit
 
 # Запуск тестов бэкенда Rust
-cd src-tauri && cargo test && cargo clippy -- -D warnings
+cd src-tauri && cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
 ### 9.4 Управление презентационным симулятором (Интерактивные горячие клавиши)
-Во время демонстрации приложения активны следующие глобальные клавиши:
-- **`1`**: Режим ультра-фокуса ($92\%$) — экран абсолютно прозрачен, HUD светится неоновым цианом.
-- **`2`**: Нормальный рабочий поток ($72\%$) — стандартное рабочее состояние.
-- **`3`**: Дрейф внимания и прокрастинация ($38\%$) — демонстрация срабатывания БОС: экран плавно затеняется виньеткой.
-- **`4`**: Артефакт мимики / моргания — индикатор артефакта, временная фиксация прозрачности.
+Клавиши `1`–`5` и `Пробел` действуют, когда в фокусе окно панели управления (или вкладка браузера) и выбран симулятор; `Ctrl+Shift+G` — глобальная.
+- **`1`**: Высокая концентрация (~$92\%$) — экран прозрачен, HUD светится неоновым цианом.
+- **`2`**: Рабочий поток (~$78\%$) — стандартное рабочее состояние.
+- **`3`**: Дрейф внимания (~$42\%$) — демонстрация срабатывания БОС: экран плавно затеняется.
+- **`4`**: Артефакт мимики / моргания (~240 мс) — индикатор артефакта, временная фиксация прозрачности.
+- **`5`**: Медитация — высокая альфа-активность (для режима релаксации).
 - **`Пробел`**: Пауза / Возобновление сеанса БОС.
-- **`Ctrl+Shift+G`** (или кнопка в HUD): Развернуть / Свернуть панель управления и настроек.
+- **`Ctrl+Shift+G`**: Показать панель управления и вернуть HUD интерактивность (выключить click-through). То же доступно из меню трея и кнопкой в HUD.
 
 ---
-*Документ утвержден для разработки FocusGlass. Версия спецификации: 1.0.0-PROD.*
+*Документ утвержден для разработки FocusGlass. Версия спецификации: 1.0.0.*

@@ -13,16 +13,113 @@ import { GlassPanel } from './components/glass/GlassPanel';
 import { GlassButton } from './components/glass/GlassButton';
 import { GlassBadge } from './components/glass/GlassBadge';
 import { BentoMetricGrid } from './components/dashboard/BentoMetricGrid';
-import { FocusBarHUD } from './components/hud/FocusBarHUD';
-import { BiofeedbackOverlay } from './components/overlay/BiofeedbackOverlay';
+import { FocusBarHUD, FocusBarHUDView } from './components/hud/FocusBarHUD';
+import { BiofeedbackOverlay, DimLayer } from './components/overlay/BiofeedbackOverlay';
 import { SettingsModal } from './components/settings/SettingsModal';
 import { tauriBridge } from './services/tauriBridge';
 
 import neurotechLogo from './assets/neurotech-logo.png';
 import brainbitIcon from './assets/brainbit-icon.png';
 
+/** Всплывающее сообщение об ошибке Rust-ядра или экспорта. */
+const NoticeToast: React.FC = () => {
+  const notice = useFocusStore((s) => s.notice);
+  const dismissNotice = useFocusStore((s) => s.dismissNotice);
+
+  React.useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(dismissNotice, 8000);
+    return () => window.clearTimeout(timer);
+  }, [notice, dismissNotice]);
+
+  if (!notice) return null;
+  return (
+    <div
+      role="alert"
+      className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-[60] max-w-lg px-4 py-2.5 rounded-xl border text-xs shadow-2xl backdrop-blur-xl flex items-start gap-3 ${
+        notice.kind === 'error'
+          ? 'bg-rose-950/90 border-rose-500/50 text-rose-100'
+          : 'bg-slate-900/90 border-white/20 text-slate-100'
+      }`}
+    >
+      <span className="select-text">{notice.text}</span>
+      <button
+        onClick={dismissNotice}
+        className="shrink-0 text-white/60 hover:text-white cursor-pointer"
+        title="Dismiss"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+};
+
+/**
+ * Браузерный режим (без оболочки Tauri): отдельного окна оверлея нет, поэтому
+ * светофильтр и HUD рисуются прямо на странице.
+ */
+const InPageOverlay: React.FC = () => {
+  const {
+    feedbackState,
+    settings,
+    deviceStatus,
+    telemetry,
+    viewMode,
+    setViewMode,
+    isClickThrough,
+    toggleClickThrough,
+    setIsSettingsOpen,
+    isPaused,
+    togglePause,
+    activePreset,
+    setPreset,
+    injectArtifact,
+  } = useFocusStore();
+
+  const isSimulator = settings.deviceSource === 'simulator';
+  const streamActive = isSimulator || deviceStatus.connected;
+  const canDim = streamActive && feedbackState.isContactOk && feedbackState.isDimmingActive;
+  const threshold = Math.round(feedbackState.effectiveThreshold ?? settings.threshold);
+
+  return (
+    <>
+      <DimLayer
+        opacity={canDim ? feedbackState.overlayOpacity : 0}
+        cssBlurPx={canDim ? feedbackState.blurRadius : 0}
+        mode={settings.mode}
+        metric={feedbackState.smoothedMetric}
+        threshold={threshold}
+      />
+      {viewMode === 'hud' && (
+        <FocusBarHUDView
+          mode={settings.mode}
+          isSimulator={isSimulator}
+          streamActive={streamActive}
+          contactOk={feedbackState.isContactOk}
+          artifactFrozen={feedbackState.isArtifactFrozen}
+          metric={feedbackState.smoothedMetric}
+          threshold={threshold}
+          sensors={telemetry?.signalQuality ?? { t3: true, t4: true, o1: true, o2: true }}
+          isPaused={isPaused}
+          activePreset={activePreset}
+          isClickThrough={isClickThrough}
+          onTogglePause={togglePause}
+          onOpenDashboard={() => setViewMode('dashboard')}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          onToggleClickThrough={() => void toggleClickThrough()}
+          onSetPreset={setPreset}
+          onInjectArtifact={injectArtifact}
+        />
+      )}
+    </>
+  );
+};
+
 export const App: React.FC = () => {
   const {
+    isTauri,
+    unifiedHud,
+    overlayWindowCount,
     viewMode,
     setViewMode,
     isClickThrough,
@@ -34,45 +131,36 @@ export const App: React.FC = () => {
     deviceStatus,
     telemetry,
     isPaused,
-    overlayWindowCount,
+    quit,
   } = useFocusStore();
-
-  // Ctrl+Shift+G (глобальный хоткей в Rust) выключает click-through — синхронизируем состояние
-  React.useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window)) return;
-    let unlisten: (() => void) | undefined;
-    import('@tauri-apps/api/event')
-      .then(({ listen }) =>
-        listen('click-through-disabled', () => useFocusStore.setState({ isClickThrough: false }))
-      )
-      .then((fn) => {
-        unlisten = fn;
-      });
-    return () => unlisten?.();
-  }, []);
 
   const isSimulator = settings.deviceSource === 'simulator';
   const isBleConnected = !isSimulator && deviceStatus.connected;
 
   const quality = telemetry?.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
-  const activeSensorsCount = isSimulator || isBleConnected
-    ? [quality.t3, quality.t4, quality.o1, quality.o2].filter(Boolean).length
-    : 0;
+  const activeSensorsCount =
+    isSimulator || isBleConnected
+      ? [quality.t3, quality.t4, quality.o1, quality.o2].filter(Boolean).length
+      : 0;
+
+  const isSplitLinuxHud = isTauri && !unifiedHud && viewMode === 'hud';
+  const hideDashboardForHud = (!isTauri || !unifiedHud) && viewMode === 'hud';
 
   return (
     <div
       className={`min-h-screen w-full relative flex flex-col font-sans overflow-x-hidden ${
-        viewMode === 'dashboard' ? 'dashboard-surface' : ''
+        !hideDashboardForHud ? 'dashboard-surface' : ''
       }`}
     >
-      {/* In-page dimming only when no native overlay windows cover the screens, and never inside
-          the small floating-HUD window, where it would draw its cue card over the HUD itself */}
-      {overlayWindowCount === 0 && viewMode !== 'hud' && <BiofeedbackOverlay />}
+      {/* В браузере оверлей и HUD внутри страницы; на Linux при uncomposited X11 — fallback */}
+      {!isTauri && <InPageOverlay />}
+      {isTauri && !unifiedHud && overlayWindowCount === 0 && viewMode !== 'hud' && (
+        <BiofeedbackOverlay />
+      )}
 
-      {/* Floating HUD View (Minimalist "Шкала-столбик" Over Active Desktop) */}
-      {viewMode === 'hud' ? (
+      {isSplitLinuxHud ? (
         <FocusBarHUD />
-      ) : (
+      ) : hideDashboardForHud ? null : (
         /* Full Dashboard View */
         <div className="relative z-10 flex flex-col flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 space-y-4">
           {/* Top Liquid Glass App Bar */}
@@ -95,7 +183,7 @@ export const App: React.FC = () => {
                       FocusGlass
                     </h1>
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/20 text-[#FF6600] font-mono font-semibold">
-                      v0.2-MVP
+                      v{__APP_VERSION__}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-[10px] text-slate-400">
@@ -147,7 +235,11 @@ export const App: React.FC = () => {
                 variant="primary"
                 onClick={() => setViewMode('hud')}
                 icon={<Minimize2 className="w-3.5 h-3.5" />}
-                title="Switch to Floating Screen Overlay HUD"
+                title={
+                  unifiedHud
+                    ? 'Hide the dashboard to the tray and keep the HUD on the overlay (open the dashboard back from HUD or tray)'
+                    : 'Switch to Floating Screen Overlay HUD'
+                }
               >
                 Floating HUD
               </GlassButton>
@@ -185,23 +277,31 @@ export const App: React.FC = () => {
                 <Sliders className="w-3.5 h-3.5" />
               </button>
 
-              {/* Window Minimize & Close for Tauri */}
-              <div className="hidden sm:flex items-center pl-2 ml-1 border-l border-white/10 gap-1">
-                <button
-                  onClick={() => tauriBridge.minimizeWindow()}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer"
-                  title="Minimize"
-                >
-                  <Minus className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  onClick={() => tauriBridge.closeWindow()}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 cursor-pointer"
-                  title="Close"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
+              {/* Window Minimize & Close (desktop shell only) */}
+              {isTauri && (
+                <div className="hidden sm:flex items-center pl-2 ml-1 border-l border-white/10 gap-1">
+                  <button
+                    onClick={() => {
+                      tauriBridge.minimizeWindow().catch((err: unknown) => {
+                        useFocusStore
+                          .getState()
+                          .showNotice('error', `Failed to minimize: ${String(err)}`);
+                      });
+                    }}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer"
+                    title="Minimize"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => void quit()}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 cursor-pointer"
+                    title="Save the session and quit FocusGlass"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
             </div>
           </GlassPanel>
 
@@ -255,6 +355,7 @@ export const App: React.FC = () => {
 
       {/* Settings Modal */}
       <SettingsModal />
+      <NoticeToast />
     </div>
   );
 };

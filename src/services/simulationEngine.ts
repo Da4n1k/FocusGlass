@@ -104,11 +104,30 @@ export class SimulationEngine {
     if (this.timerId !== null) return;
 
     const intervalMs = 16;
-    const samplesPerTick = Math.round((this.sampleRateHz * intervalMs) / 1000); // 4 samples
+    // Do not catch up more than 2 seconds of signal per tick (system sleep / frozen tab).
+    const maxCatchUpSamples = this.sampleRateHz * 2;
+    let lastTickAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    let sampleDebt = 0;
 
     this.timerId = globalThis.setInterval(() => {
-      if (this.isPaused || this.settings.deviceSource !== 'simulator') return;
-      this.stepSamples(samplesPerTick);
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const elapsedMs = Math.max(0, now - lastTickAt);
+      lastTickAt = now;
+
+      if (this.isPaused || this.settings.deviceSource !== 'simulator') {
+        sampleDebt = 0;
+        return;
+      }
+
+      // Compensate WebView timer throttling when the dashboard window is hidden in the tray.
+      sampleDebt = Math.min(
+        maxCatchUpSamples,
+        sampleDebt + (elapsedMs * this.sampleRateHz) / 1000
+      );
+      const due = Math.floor(sampleDebt);
+      if (due <= 0) return;
+      sampleDebt -= due;
+      this.stepSamples(due);
     }, intervalMs);
   }
 
@@ -292,6 +311,10 @@ export class SimulationEngine {
 
   public setElectrodeQuality(channel: keyof ElectrodeSignalQuality, isOk: boolean) {
     this.signalQuality[channel] = isOk;
+  }
+
+  public getElectrodeQuality(): ElectrodeSignalQuality {
+    return { ...this.signalQuality };
   }
 
   public getRawBuffer(): EEGTelemetry[] {

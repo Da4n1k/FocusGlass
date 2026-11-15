@@ -7,6 +7,19 @@ export const DEFAULT_SETTINGS: FocusGlassSettings = {
   sensitivitySeconds: 2.0,
   dimmingMaxOpacity: 0.7,
   blurRadius: 16,
+  dimmingScope: 'fullscreen',
+  distractorPatterns: [
+    'telegram',
+    'discord',
+    'whatsapp',
+    'vk.com',
+    'вконтакте',
+    'youtube',
+    'tiktok',
+    'instagram',
+    'twitch',
+    'steam',
+  ],
   audioFeedbackEnabled: false,
   audioVolume: 1.0,
   invertReaction: false,
@@ -64,6 +77,10 @@ export function sanitizeSettings(
     ...base,
     mode: pickEnum(src.mode, ['concentration', 'relaxation'] as const, base.mode),
     deviceSource: pickEnum(src.deviceSource, ['simulator', 'bluetooth'] as const, base.deviceSource),
+    dimmingScope: pickEnum(src.dimmingScope, ['fullscreen', 'distractors'] as const, base.dimmingScope),
+    distractorPatterns: Array.isArray(src.distractorPatterns)
+      ? src.distractorPatterns.filter((p): p is string => typeof p === 'string')
+      : [...base.distractorPatterns],
     audioFeedbackEnabled:
       typeof src.audioFeedbackEnabled === 'boolean'
         ? src.audioFeedbackEnabled
