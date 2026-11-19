@@ -18,6 +18,7 @@ use crate::error::{AppError, AppResult};
 use super::contact::{
     resist_ohms_to_payload, ChannelResistancePayload, ElectrodeQualityPayload, SignalContactMonitor,
 };
+use super::recorder::{DumpSampleInput, EegDumpRecorder, EVENT_EEG_DUMP_STATUS};
 use super::neurosdk_ffi::{
     family_display_name, volts_to_microvolts, BrainBitResistData, BrainBitSignalData,
     EEGChannelInfo, HeadbandResistData, HeadbandSignalData, ListenerHandle, NeuroSdkApi, OpStatus,
@@ -143,6 +144,8 @@ impl BrainBit2ChannelMap {
 
 enum CallbackEvent {
     Signal {
+        pack_num: u32,
+        marker: u8,
         t3_uv: f64,
         t4_uv: f64,
         o1_uv: f64,
@@ -208,6 +211,8 @@ unsafe extern "C" fn on_bb_signal_callback(
     let slice = unsafe { std::slice::from_raw_parts(data, sz_data as usize) };
     for s in slice {
         let _ = ctx.tx.try_send(CallbackEvent::Signal {
+            pack_num: s.pack_num,
+            marker: s.marker,
             t3_uv: volts_to_microvolts(s.t3),
             t4_uv: volts_to_microvolts(s.t4),
             o1_uv: volts_to_microvolts(s.o1),
@@ -252,6 +257,8 @@ unsafe extern "C" fn on_hb_signal_callback(
     let slice = unsafe { std::slice::from_raw_parts(data, sz_data as usize) };
     for s in slice {
         let _ = ctx.tx.try_send(CallbackEvent::Signal {
+            pack_num: s.pack_num,
+            marker: s.marker,
             t3_uv: volts_to_microvolts(s.t3),
             t4_uv: volts_to_microvolts(s.t4),
             o1_uv: volts_to_microvolts(s.o1),
@@ -301,6 +308,8 @@ unsafe extern "C" fn on_bb2_signal_callback(
         let chs = unsafe { std::slice::from_raw_parts(pkt.samples, pkt.sz_samples as usize) };
         let read_uv = |idx: Option<usize>| idx.and_then(|i| chs.get(i).copied()).map(volts_to_microvolts).unwrap_or(0.0);
         let _ = ctx.tx.try_send(CallbackEvent::Signal {
+            pack_num: pkt.pack_num,
+            marker: pkt.marker,
             t3_uv: read_uv(ctx.bb2_map.t3),
             t4_uv: read_uv(ctx.bb2_map.t4),
             o1_uv: read_uv(ctx.bb2_map.o1),
@@ -460,6 +469,7 @@ struct WorkerContext {
     api: Option<Arc<NeuroSdkApi>>,
     app: AppHandle,
     shared: Arc<SharedState>,
+    recorder: Arc<EegDumpRecorder>,
     cb_tx: Sender<CallbackEvent>,
     scanner: *mut SensorScanner,
     known_sensors: HashMap<String, SensorInfo>,
@@ -563,6 +573,9 @@ impl WorkerContext {
     }
 
     fn disconnect_active(&mut self, update_status: bool) -> DeviceStatusResponse {
+        if let Ok(Some(dump_status)) = self.recorder.stop_if_source("bluetooth") {
+            let _ = self.app.emit(EVENT_EEG_DUMP_STATUS, dump_status);
+        }
         if let (Some(session), Some(api)) = (self.session.take(), self.api.as_ref()) {
             session.close(api);
         }
@@ -756,6 +769,11 @@ impl WorkerContext {
     }
 
     fn set_mode(&mut self, mode: StreamMode) -> AppResult<DeviceStatusResponse> {
+        if mode != StreamMode::Signal {
+            if let Ok(Some(dump_status)) = self.recorder.stop_if_source("bluetooth") {
+                let _ = self.app.emit(EVENT_EEG_DUMP_STATUS, dump_status);
+            }
+        }
         let api = Arc::clone(
             self.api
                 .as_ref()
@@ -988,9 +1006,14 @@ fn epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn telemetry_loop(app: AppHandle, shared: Arc<SharedState>, rx: Receiver<CallbackEvent>) {
+fn telemetry_loop(
+    app: AppHandle,
+    shared: Arc<SharedState>,
+    recorder: Arc<EegDumpRecorder>,
+    rx: Receiver<CallbackEvent>,
+) {
     let mut monitor = SignalContactMonitor::new();
-    let mut signal_batch: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(MAX_BATCH_SAMPLES);
+    let mut signal_batch: Vec<(u32, u8, f64, f64, f64, f64)> = Vec::with_capacity(MAX_BATCH_SAMPLES);
     let mut last_flush = Instant::now();
     let mut last_resist_emit = Instant::now() - RESIST_EMIT_MIN_INTERVAL;
     let mut last_mode = shared.mode.load(Ordering::Relaxed);
@@ -1024,6 +1047,9 @@ fn telemetry_loop(app: AppHandle, shared: Arc<SharedState>, rx: Receiver<Callbac
             Ok(CallbackEvent::ConnectionState(state)) => {
                 if let Ok(mut guard) = shared.status.lock() {
                     if state == STATE_OUT_OF_RANGE {
+                        if let Ok(Some(dump_status)) = recorder.stop_if_source("bluetooth") {
+                            let _ = app.emit(EVENT_EEG_DUMP_STATUS, dump_status);
+                        }
                         guard.connected = false;
                         guard.connection_state = "disconnected".to_string();
                         guard.stream_mode = Some("idle".to_string());
@@ -1067,6 +1093,8 @@ fn telemetry_loop(app: AppHandle, shared: Arc<SharedState>, rx: Receiver<Callbac
                 }
             }
             Ok(CallbackEvent::Signal {
+                pack_num,
+                marker,
                 t3_uv,
                 t4_uv,
                 o1_uv,
@@ -1075,15 +1103,15 @@ fn telemetry_loop(app: AppHandle, shared: Arc<SharedState>, rx: Receiver<Callbac
                 if shared.mode.load(Ordering::Relaxed) != MODE_SIGNAL {
                     continue;
                 }
-                signal_batch.push((t3_uv, t4_uv, o1_uv, o2_uv));
+                signal_batch.push((pack_num, marker, t3_uv, t4_uv, o1_uv, o2_uv));
                 if signal_batch.len() >= MAX_BATCH_SAMPLES {
-                    flush_signal_batch(&app, &shared, &mut monitor, &mut signal_batch);
+                    flush_signal_batch(&app, &recorder, &mut monitor, &mut signal_batch);
                     last_flush = Instant::now();
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
                 if !signal_batch.is_empty() {
-                    flush_signal_batch(&app, &shared, &mut monitor, &mut signal_batch);
+                    flush_signal_batch(&app, &recorder, &mut monitor, &mut signal_batch);
                     last_flush = Instant::now();
                 }
             }
@@ -1094,20 +1122,39 @@ fn telemetry_loop(app: AppHandle, shared: Arc<SharedState>, rx: Receiver<Callbac
 
 fn flush_signal_batch(
     app: &AppHandle,
-    shared: &SharedState,
+    recorder: &EegDumpRecorder,
     monitor: &mut SignalContactMonitor,
-    batch: &mut Vec<(f64, f64, f64, f64)>,
+    batch: &mut Vec<(u32, u8, f64, f64, f64, f64)>,
 ) {
     if batch.is_empty() {
         return;
     }
-    let resist = shared.latest_resist.lock().ok().and_then(|g| *g);
     let now = epoch_ms();
     let count = batch.len();
     let mut packets = Vec::with_capacity(count);
-    for (idx, &(t3_uv, t4_uv, o1_uv, o2_uv)) in batch.iter().enumerate() {
+    for (idx, &(pack_num, marker, t3_uv, t4_uv, o1_uv, o2_uv)) in batch.iter().enumerate() {
         let quality = monitor.update(t3_uv, t4_uv, o1_uv, o2_uv);
         let ts = now.saturating_sub(((count - 1 - idx) as u64) * 4);
+        if recorder.is_recording() {
+            let dump_sample = DumpSampleInput {
+                timestamp: ts,
+                pack_num,
+                marker,
+                t3: t3_uv,
+                t4: t4_uv,
+                o1: o1_uv,
+                o2: o2_uv,
+                t3_ok: quality.t3,
+                t4_ok: quality.t4,
+                o1_ok: quality.o1,
+                o2_ok: quality.o2,
+            };
+            if let Ok(Some(dump_status)) = recorder.record_bluetooth_sample(&dump_sample) {
+                let _ = app.emit(EVENT_EEG_DUMP_STATUS, dump_status);
+            }
+        }
+        // Live BrainBit cannot measure impedance during Signal mode: omit stale pre-session
+        // resistance so live biofeedback contact is driven truthfully by SignalContactMonitor.
         packets.push(RawBrainBitPacketPayload {
             timestamp: ts,
             raw_channels: RawEegChannelsPayload {
@@ -1117,7 +1164,7 @@ fn flush_signal_batch(
                 o2: o2_uv,
             },
             signal_quality: quality,
-            resistance_k_ohm: resist,
+            resistance_k_ohm: None,
         });
     }
     batch.clear();
@@ -1144,6 +1191,7 @@ impl BrainBitDriver {
         app: AppHandle,
         app_data_dir: Option<&Path>,
         resource_dir: Option<&Path>,
+        recorder: Arc<EegDumpRecorder>,
     ) -> Self {
         let (api, sdk_err) = match NeuroSdkApi::load(app_data_dir, resource_dir) {
             Ok((loaded, path)) => {
@@ -1174,13 +1222,15 @@ impl BrainBitDriver {
         let (cb_tx, cb_rx) = bounded::<CallbackEvent>(4096);
 
         let forwarder_shared = Arc::clone(&shared);
+        let forwarder_recorder = Arc::clone(&recorder);
         let forwarder_app = app.clone();
         let forwarder_handle = thread::Builder::new()
             .name("focusglass-brainbit-telemetry".to_string())
-            .spawn(move || telemetry_loop(forwarder_app, forwarder_shared, cb_rx))
+            .spawn(move || telemetry_loop(forwarder_app, forwarder_shared, forwarder_recorder, cb_rx))
             .ok();
 
         let worker_shared = Arc::clone(&shared);
+        let worker_recorder = Arc::clone(&recorder);
         let worker_cb_tx = cb_tx.clone();
         let worker_handle = thread::Builder::new()
             .name("focusglass-brainbit-worker".to_string())
@@ -1189,6 +1239,7 @@ impl BrainBitDriver {
                     api,
                     app,
                     shared: worker_shared,
+                    recorder: worker_recorder,
                     cb_tx: worker_cb_tx,
                     scanner: std::ptr::null_mut(),
                     known_sensors: HashMap::new(),
@@ -1261,6 +1312,10 @@ impl BrainBitDriver {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_else(|_| DeviceStatusResponse::bluetooth_pending())
+    }
+
+    pub fn latest_resist(&self) -> Option<ChannelResistancePayload> {
+        self.inner.shared.latest_resist.lock().ok().and_then(|g| *g)
     }
 
     pub fn scan(&self, duration_ms: Option<u64>) -> AppResult<BrainBitScanResponse> {

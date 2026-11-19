@@ -204,3 +204,43 @@ test('Calibration: explicit null or excessive resistance prevents contact and ba
   });
   assert.equal(BiofeedbackEngine.calibrateBaseline(Array.from({ length: 25 }, (_, i) => ({ ...noContact, timestamp: i }))).sampleCount, 0);
 });
+
+test('EEG recordings: parses Rust EegDumpRecorder CSV with DC offset and replays clean Alpha spectrum', () => {
+  const rows = [
+    '# FocusGlass Raw EEG Dump v1',
+    '# source=bluetooth',
+    '# device=BrainBit',
+    '# sample_rate_hz=250',
+    '# started_at_unix_ms=1794910000000',
+    '# pre_session_resist_kOhm=T3:140.5,T4:180.0,O1:210.0,O2:220.0',
+    'timestamp_ms,pack_num,marker,T3_uV,T4_uV,O1_uV,O2_uV,T3_ok,T4_ok,O1_ok,O2_ok,event_label',
+  ];
+  for (let n = 0; n < 300; n++) {
+    const alpha10 = 24 * Math.sin((2 * Math.PI * 10 * n) / 250);
+    const t3 = -40_000;
+    const t4 = 25_000;
+    const o1 = 45_000 + alpha10;
+    const o2 = -30_000 + alpha10;
+    rows.push(
+      `${1000 + n * 4},${n},0,${t3.toFixed(3)},${t4.toFixed(3)},${o1.toFixed(3)},${o2.toFixed(3)},1,1,1,1,eyes_closed`
+    );
+  }
+  const recording = parseEEGRecording(rows.join('\n'), 'brainbit_dump.csv');
+  assert.equal(recording.sampleRateHz, 250);
+  assert.equal(recording.frames.length, 300);
+  assert.deepEqual(recording.frames[0].signalQuality, validQuality);
+  assert.equal(recording.frames[0].resistanceKOhm, undefined);
+
+  const engine = new SimulationEngine();
+  let lastSpectrum: { alpha: number } | undefined;
+  const unsub = engine.subscribe((t) => {
+    lastSpectrum = t.spectrum;
+  });
+  const state = engine.ingestRecordedFrames(recording.frames);
+  unsub();
+  engine.stop();
+
+  assert.equal(state.isContactOk, true);
+  assert.equal(state.isArtifactFrozen, false);
+  assert.ok((lastSpectrum?.alpha ?? 0) > 85, `Expected Alpha > 85% from replayed raw dump, got ${lastSpectrum?.alpha}`);
+});

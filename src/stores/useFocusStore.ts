@@ -12,6 +12,9 @@ import type {
   HudAction,
   OverlayFrame,
   BrainBitStreamMode,
+  ChannelResistanceKOhm,
+  DumpSampleInput,
+  EegDumpStatus,
 } from '../services/eegTypes';
 import type { EEGRecording } from '../services/eegRecording';
 import { parseEEGRecording } from '../services/eegRecording';
@@ -173,10 +176,18 @@ interface FocusStoreState {
   // BrainBit BLE & Fit Check
   fitHoldMs: number;
   fitVerified: boolean;
+  lastFitResistance: ChannelResistanceKOhm | null;
   connectBrainBitDevice: (address: string, initialMode?: BrainBitStreamMode) => Promise<DeviceStatus>;
   disconnectBrainBitDevice: () => Promise<void>;
   startFitCheck: () => Promise<void>;
   startEegStreamFromFitCheck: () => Promise<void>;
+
+  // Raw 250 Hz EEG CSV Dump Recorder
+  dumpStatus: EegDumpStatus;
+  startEegDump: (sessionTag?: string) => Promise<void>;
+  stopEegDump: () => Promise<void>;
+  setEegDumpLabel: (label: string, oneShot?: boolean) => Promise<void>;
+  openEegDumpsFolder: () => Promise<void>;
 
   // Controls
   activePreset: PresetState;
@@ -228,6 +239,45 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
   let lastOverlayPublishAt = 0;
   let overlayErrorReported = false;
   let lastAutosavedDuration = -1;
+  let simDumpQueue: DumpSampleInput[] = [];
+  let simDumpPackSeq = 0;
+
+  const flushSimulatorDumpQueue = (force = false): void => {
+    if (simDumpQueue.length === 0) return;
+    if (!force && simDumpQueue.length < 25) return;
+    const batch = simDumpQueue;
+    simDumpQueue = [];
+    void tauriBridge.appendEegDumpSamples(batch).catch((err: unknown) => {
+      console.warn('[FocusStore] appendEegDumpSamples failed:', err);
+    });
+  };
+
+  const syncSimulatorDumpListener = (status: EegDumpStatus): void => {
+    if (isTauri && status.recording && status.source === 'simulator') {
+      simulationEngine.setSimulatorSampleListener((samples) => {
+        for (const s of samples) {
+          simDumpPackSeq += 1;
+          simDumpQueue.push({
+            timestamp: s.timestamp,
+            packNum: simDumpPackSeq,
+            marker: s.isArtifact ? 1 : 0,
+            t3: s.rawChannels.t3,
+            t4: s.rawChannels.t4,
+            o1: s.rawChannels.o1,
+            o2: s.rawChannels.o2,
+            t3Ok: s.signalQuality.t3,
+            t4Ok: s.signalQuality.t4,
+            o1Ok: s.signalQuality.o1,
+            o2Ok: s.signalQuality.o2,
+          });
+        }
+        flushSimulatorDumpQueue(false);
+      });
+    } else {
+      simulationEngine.setSimulatorSampleListener(null);
+      simDumpQueue = [];
+    }
+  };
 
   if (storedCalibration) simulationEngine.setPersonalCalibration(storedCalibration);
 
@@ -421,13 +471,20 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       const allUsable = areAllElectrodesUsable(update.signalQuality, update.resistanceKOhm);
       const fit = fitStability.update(allUsable, update.timestamp || Date.now());
       simulationEngine.applyBrainBitResistUpdate(update);
-      set({ fitHoldMs: fit.holdMs, fitVerified: fit.verified });
+      set({
+        fitHoldMs: fit.holdMs,
+        fitVerified: fit.verified,
+        lastFitResistance: update.resistanceKOhm,
+      });
     }
   });
 
   void tauriBridge.onBrainBitStatus((status) => {
     const prevMode = get().deviceStatus.streamMode;
-    if (!status.connected || status.streamMode === 'idle' || (status.streamMode === 'resist' && prevMode !== 'resist')) {
+    if (!status.connected || status.streamMode === 'idle') {
+      fitStability.reset();
+      set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false, lastFitResistance: null });
+    } else if (status.streamMode === 'resist' && prevMode !== 'resist') {
       fitStability.reset();
       set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false });
     } else {
@@ -438,6 +495,20 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     }
     publishOverlay();
   });
+
+  if (isTauri) {
+    void tauriBridge.getEegDumpStatus().then(
+      (dumpStatus) => {
+        syncSimulatorDumpListener(dumpStatus);
+        set({ dumpStatus });
+      },
+      () => undefined
+    );
+    void tauriBridge.onEegDumpStatus((dumpStatus) => {
+      syncSimulatorDumpListener(dumpStatus);
+      set({ dumpStatus });
+    });
+  }
 
   void sessions.list().then(
     (records) => set({ sessionHistory: records }),
@@ -529,9 +600,12 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       set({ settings: updated });
 
       if (newSettings.deviceSource && newSettings.deviceSource !== current.deviceSource) {
+        if (get().dumpStatus.recording) {
+          void get().stopEegDump();
+        }
         audioFeedback.sync(false, 0);
         fitStability.reset();
-        set({ fitHoldMs: 0, fitVerified: false });
+        set({ fitHoldMs: 0, fitVerified: false, lastFitResistance: null });
         void tauriBridge.setDeviceSource(newSettings.deviceSource).then((deviceStatus) => {
           set({ deviceStatus });
           publishOverlay();
@@ -623,6 +697,13 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     dismissNotice: () => set({ notice: null }),
 
     quit: async () => {
+      if (get().dumpStatus.recording) {
+        try {
+          await get().stopEegDump();
+        } catch (err) {
+          console.warn('[FocusStore] dump stop on quit failed:', err);
+        }
+      }
       try {
         await persistActiveSession();
       } catch (err) {
@@ -679,6 +760,77 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     fitHoldMs: 0,
     fitVerified: false,
+    lastFitResistance: null,
+
+    dumpStatus: {
+      recording: false,
+      dumpsDir: '',
+      sampleCount: 0,
+      durationSeconds: 0,
+      markerCount: 0,
+    },
+
+    startEegDump: async (sessionTag) => {
+      const { settings, deviceStatus } = get();
+      if (settings.deviceSource === 'bluetooth' && !deviceStatus.connected) {
+        showNotice('info', 'Сначала подключите BrainBit BLE во вкладке BrainBit & Simulator.');
+        return;
+      }
+      try {
+        simDumpPackSeq = 0;
+        simDumpQueue = [];
+        const status = await tauriBridge.startEegDump(settings.deviceSource, sessionTag);
+        syncSimulatorDumpListener(status);
+        set({ dumpStatus: status });
+        if (settings.deviceSource === 'bluetooth') {
+          const updatedDevice = await tauriBridge.getDeviceStatus();
+          set({ deviceStatus: updatedDevice });
+          publishOverlay();
+        }
+        showNotice('info', `Запись дампа ЭЭГ запущена: ${status.fileName ?? 'CSV'}`);
+      } catch (err) {
+        showNotice('error', `Не удалось начать запись дампа: ${errorText(err)}`);
+      }
+    },
+
+    stopEegDump: async () => {
+      try {
+        flushSimulatorDumpQueue(true);
+        simulationEngine.setSimulatorSampleListener(null);
+        const status = await tauriBridge.stopEegDump();
+        set({ dumpStatus: status });
+        if (status.lastSavedPath) {
+          showNotice(
+            'info',
+            `Дамп ЭЭГ сохранён (${(status.lastSavedSamples ?? 0).toLocaleString()} отсч.): ${status.lastSavedPath}`
+          );
+        }
+      } catch (err) {
+        showNotice('error', `Ошибка остановки записи дампа: ${errorText(err)}`);
+      }
+    },
+
+    setEegDumpLabel: async (label, oneShot = false) => {
+      if (!get().dumpStatus.recording) return;
+      try {
+        flushSimulatorDumpQueue(true);
+        const status = await tauriBridge.setEegDumpLabel(label, oneShot);
+        set({ dumpStatus: status });
+      } catch (err) {
+        showNotice('error', `Не удалось поставить метку дампа: ${errorText(err)}`);
+      }
+    },
+
+    openEegDumpsFolder: async () => {
+      try {
+        const dir = await tauriBridge.openEegDumpsFolder();
+        if (dir) {
+          set((prev) => ({ dumpStatus: { ...prev.dumpStatus, dumpsDir: dir } }));
+        }
+      } catch (err) {
+        showNotice('error', `Не удалось открыть папку дампов: ${errorText(err)}`);
+      }
+    },
 
     connectBrainBitDevice: async (address, initialMode = 'resist') => {
       try {
@@ -690,7 +842,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
           set({ settings: updated });
         }
         fitStability.reset();
-        set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false });
+        set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false, lastFitResistance: null });
         publishOverlay();
         showNotice(
           'info',
@@ -711,7 +863,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         const status = await tauriBridge.disconnectBrainBit();
         fitStability.reset();
         audioFeedback.sync(false, 0);
-        set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false });
+        set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false, lastFitResistance: null });
         publishOverlay();
       } catch (err) {
         showNotice('error', `Ошибка отключения BrainBit: ${errorText(err)}`);

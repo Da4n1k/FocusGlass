@@ -4,6 +4,8 @@ import type {
   BrainBitStreamMode,
   DeviceStatus,
   DistractionStatus,
+  DumpSampleInput,
+  EegDumpStatus,
   EEGTelemetry,
   ForegroundWindowInfo,
   HudAction,
@@ -372,6 +374,68 @@ class TauriBridge {
 
   public onBrainBitStatus(handler: (status: DeviceStatus) => void): Promise<() => void> {
     return this.on<DeviceStatus>('brainbit-status', handler);
+  }
+
+  // --- Потоковая запись сырых дампов ЭЭГ 250 Гц -----------------------------
+
+  public async getEegDumpStatus(): Promise<EegDumpStatus> {
+    if (!this.isTauri()) {
+      return {
+        recording: false,
+        dumpsDir: '',
+        sampleCount: 0,
+        durationSeconds: 0,
+        markerCount: 0,
+      };
+    }
+    return this.invoke<EegDumpStatus>('get_eeg_dump_status');
+  }
+
+  public async startEegDump(
+    source: 'bluetooth' | 'simulator',
+    sessionTag?: string
+  ): Promise<EegDumpStatus> {
+    if (!this.isTauri()) {
+      throw new BridgeError('unsupported', 'Запись сырых CSV-дампов доступна в десктопном приложении (.exe).');
+    }
+    return this.invoke<EegDumpStatus>('start_eeg_dump', {
+      source,
+      sessionTag: sessionTag?.trim() ? sessionTag.trim() : null,
+    });
+  }
+
+  public async stopEegDump(): Promise<EegDumpStatus> {
+    if (!this.isTauri()) {
+      return {
+        recording: false,
+        dumpsDir: '',
+        sampleCount: 0,
+        durationSeconds: 0,
+        markerCount: 0,
+      };
+    }
+    return this.invoke<EegDumpStatus>('stop_eeg_dump');
+  }
+
+  public async setEegDumpLabel(label: string, oneShot: boolean): Promise<EegDumpStatus> {
+    if (!this.isTauri()) {
+      throw new BridgeError('unsupported', 'Запись дампов доступна в десктопном приложении.');
+    }
+    return this.invoke<EegDumpStatus>('set_eeg_dump_label', { label, oneShot });
+  }
+
+  public async appendEegDumpSamples(samples: DumpSampleInput[]): Promise<void> {
+    if (!this.isTauri() || samples.length === 0) return;
+    await this.invoke<void>('append_eeg_dump_samples', { samples });
+  }
+
+  public async openEegDumpsFolder(): Promise<string> {
+    if (!this.isTauri()) return '';
+    return this.invoke<string>('open_eeg_dumps_folder');
+  }
+
+  public onEegDumpStatus(handler: (status: EegDumpStatus) => void): Promise<() => void> {
+    return this.on<EegDumpStatus>('eeg-dump-status', handler);
   }
 
   // --- История сессий (SQLite) ----------------------------------------------

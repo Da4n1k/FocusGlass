@@ -1,11 +1,16 @@
 //! Команды IPC. Все возвращают `Result<T, AppError>`.
 
+use std::fs;
+use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, State, Window};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, Window};
 
+use crate::bci::recorder::{
+    DumpSampleInput, EegDumpRecorder, EegDumpStatusResponse, EVENT_EEG_DUMP_STATUS,
+};
 use crate::bci::BrainBitDriver;
 use crate::distraction::{
     DistractionConfig, DistractionState, DistractionStatus, ForegroundWindowInfo,
@@ -244,6 +249,119 @@ pub async fn set_brainbit_mode(
     tauri::async_runtime::spawn_blocking(move || drv.set_mode(mode))
         .await
         .map_err(|e| AppError::Bci(format!("BLE mode switch task panicked: {e}")))?
+}
+
+// ---------------------------------------------------------------------------
+// Потоковая запись сырых дампов ЭЭГ 250 Гц в CSV
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_eeg_dump_status(
+    recorder: State<'_, Arc<EegDumpRecorder>>,
+) -> AppResult<EegDumpStatusResponse> {
+    recorder.status()
+}
+
+#[tauri::command]
+pub async fn start_eeg_dump(
+    source: String,
+    session_tag: Option<String>,
+    app: AppHandle,
+    driver: State<'_, BrainBitDriver>,
+    recorder: State<'_, Arc<EegDumpRecorder>>,
+) -> AppResult<EegDumpStatusResponse> {
+    let status = if source == "bluetooth" {
+        let mut bt = driver.bluetooth_status();
+        if !bt.connected {
+            return Err(AppError::Bci(
+                "Сначала подключите BrainBit BLE перед записью дампа ЭЭГ.".to_string(),
+            ));
+        }
+        if bt.stream_mode.as_deref() != Some("signal") {
+            let drv = driver.inner().clone();
+            bt = tauri::async_runtime::spawn_blocking(move || drv.set_mode("signal".to_string()))
+                .await
+                .map_err(|e| AppError::Bci(format!("BLE mode switch task panicked: {e}")))??;
+        }
+        let pre_resist = driver.latest_resist();
+        recorder.start(
+            "bluetooth",
+            &bt.device_name,
+            bt.serial_number.as_deref(),
+            bt.sampling_rate_hz,
+            pre_resist,
+            session_tag.as_deref(),
+        )?
+    } else if source == "simulator" {
+        recorder.start(
+            "simulator",
+            "Synthetic EEG Generator (250 Hz)",
+            None,
+            250,
+            None,
+            session_tag.as_deref(),
+        )?
+    } else {
+        return Err(AppError::UnknownDeviceSource(source));
+    };
+
+    let _ = app.emit(EVENT_EEG_DUMP_STATUS, status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn stop_eeg_dump(
+    app: AppHandle,
+    recorder: State<'_, Arc<EegDumpRecorder>>,
+) -> AppResult<EegDumpStatusResponse> {
+    let status = recorder.stop()?;
+    let _ = app.emit(EVENT_EEG_DUMP_STATUS, status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn set_eeg_dump_label(
+    label: String,
+    one_shot: bool,
+    app: AppHandle,
+    recorder: State<'_, Arc<EegDumpRecorder>>,
+) -> AppResult<EegDumpStatusResponse> {
+    let status = recorder.set_label(&label, one_shot)?;
+    let _ = app.emit(EVENT_EEG_DUMP_STATUS, status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn append_eeg_dump_samples(
+    samples: Vec<DumpSampleInput>,
+    app: AppHandle,
+    recorder: State<'_, Arc<EegDumpRecorder>>,
+) -> AppResult<()> {
+    if let Some(status) = recorder.append_simulator_samples(&samples)? {
+        let _ = app.emit(EVENT_EEG_DUMP_STATUS, status);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_eeg_dumps_folder(recorder: State<'_, Arc<EegDumpRecorder>>) -> AppResult<String> {
+    let dir = recorder.dumps_dir();
+    fs::create_dir_all(dir)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer").arg(dir).spawn()?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(dir).spawn()?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open").arg(dir).spawn()?;
+    }
+
+    Ok(dir.display().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +637,12 @@ pub fn close_window(app: AppHandle) -> AppResult<()> {
 
 /// Завершает приложение. Фронтенд вызывает её после сохранения активной сессии.
 #[tauri::command]
-pub fn quit_app(app: AppHandle, driver: State<'_, BrainBitDriver>) {
+pub fn quit_app(
+    app: AppHandle,
+    driver: State<'_, BrainBitDriver>,
+    recorder: State<'_, Arc<EegDumpRecorder>>,
+) {
+    let _ = recorder.stop();
     driver.shutdown();
     app.exit(0);
 }

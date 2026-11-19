@@ -123,6 +123,34 @@ export interface BrainBitScanResult {
   message: string;
 }
 
+export interface EegDumpStatus {
+  recording: boolean;
+  dumpsDir: string;
+  filePath?: string;
+  fileName?: string;
+  source?: 'bluetooth' | 'simulator';
+  sampleCount: number;
+  durationSeconds: number;
+  markerCount: number;
+  activeLabel?: string;
+  lastSavedPath?: string;
+  lastSavedSamples?: number;
+}
+
+export interface DumpSampleInput {
+  timestamp: number;
+  packNum?: number;
+  marker?: number;
+  t3: number;
+  t4: number;
+  o1: number;
+  o2: number;
+  t3Ok: boolean;
+  t4Ok: boolean;
+  o1Ok: boolean;
+  o2Ok: boolean;
+}
+
 /** What the native side managed to create for the screen-dimming overlay. */
 export interface OverlayInfo {
   /** Number of overlay windows (one per monitor); 0 means the in-page fallback must be used. */

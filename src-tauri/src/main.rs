@@ -39,6 +39,9 @@ pub fn request_quit(app: &AppHandle) {
         .emit_to(overlay::MAIN_LABEL, overlay::EVENT_QUIT_REQUESTED, ())
         .is_err()
     {
+        if let Some(recorder) = app.try_state::<Arc<bci::EegDumpRecorder>>() {
+            let _ = recorder.stop();
+        }
         if let Some(driver) = app.try_state::<bci::BrainBitDriver>() {
             driver.shutdown();
         }
@@ -50,12 +53,18 @@ pub fn request_quit(app: &AppHandle) {
         .name("focusglass-quit-watchdog".to_string())
         .spawn(move || {
             thread::sleep(QUIT_GRACE_PERIOD);
+            if let Some(recorder) = handle.try_state::<Arc<bci::EegDumpRecorder>>() {
+                let _ = recorder.stop();
+            }
             if let Some(driver) = handle.try_state::<bci::BrainBitDriver>() {
                 driver.shutdown();
             }
             handle.exit(0);
         });
     if spawned.is_err() {
+        if let Some(recorder) = app.try_state::<Arc<bci::EegDumpRecorder>>() {
+            let _ = recorder.stop();
+        }
         if let Some(driver) = app.try_state::<bci::BrainBitDriver>() {
             driver.shutdown();
         }
@@ -76,12 +85,20 @@ fn restore_control(app: &AppHandle) {
 fn setup(app: &AppHandle, restore_shortcut: Shortcut) -> AppResult<()> {
     let app_data_dir = app.path().app_data_dir()?;
     let resource_dir = app.path().resource_dir().ok();
+    let dumps_dir = app
+        .path()
+        .document_dir()
+        .map(|d| d.join("FocusGlass-Dumps"))
+        .unwrap_or_else(|_| app_data_dir.join("dumps"));
+    let dump_recorder = Arc::new(bci::EegDumpRecorder::new(dumps_dir));
     let db_path = app_data_dir.join("focusglass.sqlite3");
     app.manage(SessionStore::open(&db_path)?);
+    app.manage(Arc::clone(&dump_recorder));
     app.manage(bci::BrainBitDriver::start(
         app.clone(),
         Some(app_data_dir.as_path()),
         resource_dir.as_deref(),
+        dump_recorder,
     ));
 
     // Регистрируем трей до глобального хоткея, чтобы проверка click-through знала,
@@ -192,6 +209,12 @@ fn main() {
             commands::connect_brainbit,
             commands::disconnect_brainbit,
             commands::set_brainbit_mode,
+            commands::get_eeg_dump_status,
+            commands::start_eeg_dump,
+            commands::stop_eeg_dump,
+            commands::set_eeg_dump_label,
+            commands::append_eeg_dump_samples,
+            commands::open_eeg_dumps_folder,
             commands::get_window_state,
             commands::set_click_through,
             commands::set_overlay_enabled,

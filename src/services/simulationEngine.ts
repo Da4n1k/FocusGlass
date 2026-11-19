@@ -49,6 +49,7 @@ export class SimulationEngine {
   private latestTelemetry: EEGTelemetry | null = null;
 
   private subscribers: Set<TelemetrySubscriber> = new Set();
+  private simulatorSampleListener: ((samples: EEGTelemetry[]) => void) | null = null;
   private rawBatchBuffer: EEGTelemetry[] = [];
 
   constructor() {
@@ -98,6 +99,10 @@ export class SimulationEngine {
     return () => this.subscribers.delete(callback);
   }
 
+  public setSimulatorSampleListener(listener: ((samples: EEGTelemetry[]) => void) | null): void {
+    this.simulatorSampleListener = listener;
+  }
+
   public start(initialSettings?: Partial<FocusGlassSettings>) {
     if (initialSettings) {
       this.updateSettings(initialSettings);
@@ -142,12 +147,18 @@ export class SimulationEngine {
   public stepSamples(sampleCount: number = 4): BiofeedbackFeedbackState {
     let latestState = this.biofeedback.getLastState();
     const count = Math.max(1, sampleCount);
+    const stepBatch: EEGTelemetry[] | null = this.simulatorSampleListener ? [] : null;
 
     for (let i = 0; i < count; i++) {
       const telemetry = this.generateSample();
       latestState = this.biofeedback.processTelemetry(telemetry);
       this.latestTelemetry = telemetry;
       this.rawBatchBuffer.push(telemetry);
+      stepBatch?.push(telemetry);
+    }
+
+    if (stepBatch && stepBatch.length > 0 && this.simulatorSampleListener) {
+      this.simulatorSampleListener(stepBatch);
     }
 
     if (this.rawBatchBuffer.length > 1000) {

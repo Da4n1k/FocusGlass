@@ -6,6 +6,54 @@ import type {
   SpectralBandPowers,
 } from './eegTypes';
 
+class BiquadHighPass {
+  private z1 = 0;
+  private z2 = 0;
+  private initialized = false;
+  private readonly b0: number;
+  private readonly b1: number;
+  private readonly b2: number;
+  private readonly a1: number;
+  private readonly a2: number;
+
+  constructor(
+    sampleRateHz: number = 250,
+    cutoffHz: number = 1.5,
+    q: number = Math.SQRT1_2
+  ) {
+    const w0 = (2 * Math.PI * cutoffHz) / sampleRateHz;
+    const cosW0 = Math.cos(w0);
+    const alpha = Math.sin(w0) / (2 * q);
+    const a0 = 1 + alpha;
+
+    this.b0 = ((1 + cosW0) / 2) / a0;
+    this.b1 = -(1 + cosW0) / a0;
+    this.b2 = ((1 + cosW0) / 2) / a0;
+    this.a1 = (-2 * cosW0) / a0;
+    this.a2 = (1 - alpha) / a0;
+  }
+
+  public process(x: number): number {
+    if (!Number.isFinite(x)) return 0;
+    // Exact DC steady-state seed: eliminates startup ringing even on ±150 mV BrainBit DC offsets.
+    if (!this.initialized) {
+      this.z1 = -this.b0 * x;
+      this.z2 = this.b2 * x;
+      this.initialized = true;
+    }
+    const y = this.b0 * x + this.z1;
+    this.z1 = this.b1 * x - this.a1 * y + this.z2;
+    this.z2 = this.b2 * x - this.a2 * y;
+    return y;
+  }
+
+  public reset(): void {
+    this.z1 = 0;
+    this.z2 = 0;
+    this.initialized = false;
+  }
+}
+
 class BiquadNotch50Hz {
   private z1 = 0;
   private z2 = 0;
@@ -55,6 +103,7 @@ export interface BipolarProcessingSnapshot {
 /**
  * Real-time 4-channel BrainBit signal processor:
  * - Differential bipolar derivations: Left (O1 - T3) and Right (O2 - T4)
+ * - 2nd-order 1.5 Hz Butterworth HPF per hemisphere (removes dry-electrode DC offset & drift)
  * - 2nd-order 50 Hz IIR notch filter per hemisphere
  * - Per-hemisphere amplitude (> 110 uV, BrainBit SDK art_bord) & step (> 75 uV) artifact rejection
  * - 1-second (250-sample) Hamming-windowed Goertzel band power estimation (Theta 4-7 Hz, Alpha 8-13 Hz, Beta 14-30 Hz)
@@ -66,6 +115,8 @@ export class EEGSignalProcessor {
   private readonly amplitudeBorderUv: number;
   private readonly stepJumpBorderUv: number;
 
+  private readonly hpfLeft: BiquadHighPass;
+  private readonly hpfRight: BiquadHighPass;
   private readonly notchLeft: BiquadNotch50Hz;
   private readonly notchRight: BiquadNotch50Hz;
   private readonly hamming: Float64Array;
@@ -101,6 +152,8 @@ export class EEGSignalProcessor {
     this.amplitudeBorderUv = options?.amplitudeBorderUv ?? 110;
     this.stepJumpBorderUv = options?.stepJumpBorderUv ?? 75;
 
+    this.hpfLeft = new BiquadHighPass(sampleRateHz, 1.5, Math.SQRT1_2);
+    this.hpfRight = new BiquadHighPass(sampleRateHz, 1.5, Math.SQRT1_2);
     this.notchLeft = new BiquadNotch50Hz(sampleRateHz, 50, 10);
     this.notchRight = new BiquadNotch50Hz(sampleRateHz, 50, 10);
 
@@ -120,6 +173,8 @@ export class EEGSignalProcessor {
   }
 
   public reset(): void {
+    this.hpfLeft.reset();
+    this.hpfRight.reset();
     this.notchLeft.reset();
     this.notchRight.reset();
     this.leftBuffer = [];
@@ -136,8 +191,8 @@ export class EEGSignalProcessor {
     const leftRaw = rawChannels.o1 - rawChannels.t3;
     const rightRaw = rawChannels.o2 - rawChannels.t4;
 
-    const leftFiltered = this.notchLeft.process(leftRaw);
-    const rightFiltered = this.notchRight.process(rightRaw);
+    const leftFiltered = this.notchLeft.process(this.hpfLeft.process(leftRaw));
+    const rightFiltered = this.notchRight.process(this.hpfRight.process(rightRaw));
 
     const leftContactOk = signalQuality.t3 && signalQuality.o1;
     const rightContactOk = signalQuality.t4 && signalQuality.o2;

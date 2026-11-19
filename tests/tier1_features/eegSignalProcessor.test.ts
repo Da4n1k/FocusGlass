@@ -125,4 +125,35 @@ describe('EEGSignalProcessor — Bipolar Montage, 50 Hz Notch & Spectral Powers'
     assert.equal(lastFeedback.isDimmingActive, true);
     assert.ok(lastFeedback.overlayOpacity > 0.15);
   });
+
+  it('removes realistic ±120 mV BrainBit dry-electrode DC offset without false artifact freeze', () => {
+    const dsp = new EEGSignalProcessor(250);
+    const fs = 250;
+    let lastSnap = dsp.processSample({ t3: -35_000, t4: 42_000, o1: 85_000, o2: -60_000 }, ALL_OK);
+
+    // 120 mV differential DC offset (O1 - T3 = +120,000 uV, O2 - T4 = -102,000 uV) + 25 uV 10 Hz Alpha
+    for (let n = 1; n < 375; n++) {
+      const t = n / fs;
+      const alpha10 = 25 * Math.sin(2 * Math.PI * 10 * t);
+      lastSnap = dsp.processSample(
+        {
+          t3: -35_000,
+          t4: 42_000,
+          o1: 85_000 + alpha10,
+          o2: -60_000 + alpha10,
+        },
+        ALL_OK
+      );
+    }
+
+    assert.equal(lastSnap.bothSidesArtifacted, false);
+    assert.ok(
+      Math.abs(lastSnap.bipolarLeftUv) <= 28,
+      `Expected DC-removed Alpha <= 28 uV, got ${lastSnap.bipolarLeftUv}`
+    );
+    assert.ok(
+      lastSnap.spectrum.alpha > 90,
+      `Expected Alpha relative power > 90% despite 120 mV DC offset, got ${lastSnap.spectrum.alpha}%`
+    );
+  });
 });

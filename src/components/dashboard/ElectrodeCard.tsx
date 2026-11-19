@@ -34,6 +34,7 @@ export const ElectrodeCard: React.FC = () => {
     settings,
     deviceStatus,
     fitHoldMs,
+    lastFitResistance,
     setElectrodeContact,
     startFitCheck,
     startEegStreamFromFitCheck,
@@ -49,12 +50,16 @@ export const ElectrodeCard: React.FC = () => {
     ? telemetry?.signalQuality ?? { t3: true, t4: true, o1: true, o2: true }
     : { t3: false, t4: false, o1: false, o2: false };
 
-  const resistance = telemetry?.resistanceKOhm;
+  const resistance = isSimulator
+    ? telemetry?.resistanceKOhm
+    : isFitCheckMode
+    ? telemetry?.resistanceKOhm
+    : lastFitResistance ?? undefined;
   const allGood = isStreamActive && quality.t3 && quality.t4 && quality.o1 && quality.o2;
 
   const effectiveHoldMs = isSimulator ? (allGood ? FIT_HOLD_REQUIRED_MS : 0) : fitHoldMs;
   const diagnostic = diagnoseHeadbandFit(
-    isStreamActive ? resistance : undefined,
+    isStreamActive && (isSimulator || isFitCheckMode) ? resistance : undefined,
     quality,
     effectiveHoldMs
   );
@@ -189,7 +194,11 @@ export const ElectrodeCard: React.FC = () => {
         {/* Interactive Sensors List */}
         <div className="space-y-1.5">
           {electrodes.map((el) => {
-            const isHealthy = isStreamActive && (el.tier === 'good' || el.tier === 'acceptable' || (el.tier === 'unmeasured' && el.ok));
+            const isHealthy = !isStreamActive
+              ? false
+              : isSimulator || isFitCheckMode
+              ? el.tier === 'good' || el.tier === 'acceptable' || (el.tier === 'unmeasured' && el.ok)
+              : el.ok;
             return (
               <div
                 key={el.id}

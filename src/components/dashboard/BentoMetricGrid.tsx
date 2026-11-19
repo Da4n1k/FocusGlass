@@ -6,6 +6,7 @@ import { GlassPanel } from '../glass/GlassPanel';
 import { GlassBadge } from '../glass/GlassBadge';
 import { GlassSlider } from '../glass/GlassSlider';
 import { EEGOscilloscope } from './EEGOscilloscope';
+import { EEGDumpRecorderCard } from './EEGDumpRecorderCard';
 import { ElectrodeCard } from './ElectrodeCard';
 import { SessionStatsCard } from './SessionStatsCard';
 import { SessionHistoryCard } from './SessionHistoryCard';
@@ -66,7 +67,7 @@ export const BentoMetricGrid: React.FC = () => {
                   <p className="text-xs text-slate-400">
                     {isSimulator
                       ? 'Simulated BCI Stream (250 Hz · Smoothing Window Active)'
-                      : 'BrainBit BLE Telemetry (EmotionalMath Indices)'}
+                      : 'BrainBit BLE Telemetry (250 Hz · 1.5 Hz HPF + 50 Hz Notch)'}
                   </p>
                 </div>
               </div>
@@ -250,6 +251,9 @@ export const BentoMetricGrid: React.FC = () => {
 
       {/* Full 60 FPS Canvas Oscilloscope */}
       <EEGOscilloscope />
+
+      {/* Raw 250 Hz EEG CSV Dump Recorder */}
+      <EEGDumpRecorderCard />
 
       {/* Persisted session history */}
       <SessionHistoryCard />

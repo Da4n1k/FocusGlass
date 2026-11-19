@@ -9,8 +9,12 @@ const MAX_FINITE_OHM: f64 = 10_000_000.0;
 /// Sliding window for live signal detachment monitoring (1.0 s at 250 Hz).
 const WINDOW_SAMPLES: usize = 250;
 const MIN_SAMPLES_FOR_SIGNAL_CHECK: usize = 64;
-/// Open dry electrodes on BrainBit rail above ~5 mV (5000 uV) or saturate peak-to-peak > 8 mV.
-const RAIL_THRESHOLD_UV: f64 = 5_000.0;
+/// Physical BrainBit 24-bit ADC input range is ±375 mV (±375,000 uV).
+/// Good dry electrodes commonly carry ±10..200 mV electrochemical DC offset,
+/// so absolute rail detection must only trigger near actual ADC saturation.
+const ADC_RAIL_THRESHOLD_UV: f64 = 340_000.0;
+/// Open dry electrodes pick up huge 50/60 Hz mains hum (> 8 mV peak-to-peak in 1 s),
+/// which is DC-invariant (`max - min`) and unaffected by steady half-cell DC offset.
 const MAX_PEAK_TO_PEAK_UV: f64 = 8_000.0;
 /// Dead flatline (< 0.05 uV across a full 1s window) indicates a disconnected/zeroed stream.
 const FLATLINE_PEAK_TO_PEAK_UV: f64 = 0.05;
@@ -101,11 +105,6 @@ impl ChannelWindow {
         self.samples.push_back(uv);
 
         let len = self.samples.len();
-        if len < MIN_SAMPLES_FOR_SIGNAL_CHECK {
-            self.last_good = uv.abs() <= RAIL_THRESHOLD_UV;
-            return self.last_good;
-        }
-
         let mut min_v = f64::INFINITY;
         let mut max_v = f64::NEG_INFINITY;
         let mut rail_count = 0usize;
@@ -116,11 +115,17 @@ impl ChannelWindow {
             if s > max_v {
                 max_v = s;
             }
-            if s.abs() > RAIL_THRESHOLD_UV {
+            if s.abs() > ADC_RAIL_THRESHOLD_UV {
                 rail_count += 1;
             }
         }
         let p2p = max_v - min_v;
+
+        if len < MIN_SAMPLES_FOR_SIGNAL_CHECK {
+            self.last_good = uv.abs() <= ADC_RAIL_THRESHOLD_UV && p2p <= MAX_PEAK_TO_PEAK_UV;
+            return self.last_good;
+        }
+
         let too_many_railed = rail_count * 10 > len;
         let saturated = p2p > MAX_PEAK_TO_PEAK_UV;
         let flatlined = len >= WINDOW_SAMPLES && p2p < FLATLINE_PEAK_TO_PEAK_UV;
@@ -221,5 +226,32 @@ mod tests {
         assert!(last.t4);
         assert!(last.o1);
         assert!(!last.o2);
+    }
+
+    #[test]
+    fn contact_monitor_tolerates_large_dry_electrode_dc_offset_and_rejects_adc_rail() {
+        let mut monitor = SignalContactMonitor::new();
+        let mut last = ElectrodeQualityPayload::all_true();
+        // Realistic dry BrainBit half-cell DC offsets: -45 mV .. +130 mV with 35 uV AC EEG
+        for i in 0..250 {
+            let eeg = (i as f64 * 0.25).sin() * 35.0;
+            last = monitor.update(
+                -45_000.0 + eeg,
+                82_000.0 + eeg * 0.9,
+                130_000.0 + eeg * 1.1,
+                -115_000.0 + eeg * 0.8,
+            );
+        }
+        assert_eq!(last, ElectrodeQualityPayload::all_true());
+
+        // Actual ADC rail saturation (> ±340 mV) on T4 must fail contact
+        for i in 0..80 {
+            let eeg = (i as f64 * 0.25).sin() * 30.0;
+            last = monitor.update(-45_000.0 + eeg, 365_000.0, 130_000.0 + eeg, -115_000.0 + eeg);
+        }
+        assert!(last.t3);
+        assert!(!last.t4);
+        assert!(last.o1);
+        assert!(last.o2);
     }
 }

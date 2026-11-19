@@ -161,6 +161,7 @@ pub struct HeadbandSignalData {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct HeadbandResistData {
+    pub pack_num: u32,
     pub o1: f64,
     pub o2: f64,
     pub t3: f64,
@@ -574,7 +575,9 @@ mod tests {
         assert_eq!(size_of::<BrainBitSignalData>(), 40);
         assert_eq!(size_of::<BrainBitResistData>(), 32);
         assert_eq!(size_of::<HeadbandSignalData>(), 40);
-        assert_eq!(size_of::<HeadbandResistData>(), 32);
+        assert_eq!(size_of::<HeadbandResistData>(), 40);
+        assert_eq!(offset_of!(HeadbandResistData, pack_num), 0);
+        assert_eq!(offset_of!(HeadbandResistData, o1), 8);
         assert_eq!(size_of::<EEGChannelInfo>(), 11);
     }
 
