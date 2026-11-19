@@ -255,6 +255,16 @@ pub enum DimmingScope {
     Distractors,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayVisualStyle {
+    #[default]
+    FullscreenDim,
+    VignetteBlur,
+    ThresholdBlur,
+    Distractors,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SensorFlags {
     pub t3: bool,
@@ -273,6 +283,14 @@ pub struct OverlayFrame {
     pub threshold: f64,
     pub mode: String,
     pub scope: DimmingScope,
+    #[serde(default)]
+    pub visual_style: OverlayVisualStyle,
+    #[serde(default)]
+    pub has_visible_distractors: bool,
+    #[serde(default)]
+    pub show_pause_card: bool,
+    #[serde(default)]
+    pub show_cue_card: bool,
     pub stream_active: bool,
     pub contact_ok: bool,
     pub artifact_frozen: bool,
@@ -362,9 +380,16 @@ impl OverlayController {
     }
 }
 
-/// Нужно ли размытие экрана при данном кадре (с гистерезисом против мерцания).
+/// Нужно ли размытие экрана при данном кадре (с гистерезисом против мерцания
+/// и соблюдением принципа «не навреди»).
 pub fn blur_decision(currently_active: bool, frame: &OverlayFrame, overlay_enabled: bool) -> bool {
-    if !overlay_enabled || frame.scope != DimmingScope::Fullscreen || frame.opacity <= 0.0 {
+    if !overlay_enabled || frame.opacity <= 0.0 {
+        return false;
+    }
+    if frame.visual_style == OverlayVisualStyle::FullscreenDim {
+        return false;
+    }
+    if frame.scope == DimmingScope::Distractors && !frame.has_visible_distractors {
         return false;
     }
     if currently_active {
@@ -462,7 +487,19 @@ pub fn publish_frame(app: &AppHandle, frame: OverlayFrame) -> AppResult<()> {
         // Перед первым снимком оверлей исключается из захвата экрана, иначе он
         // попал бы в собственный фон и затемнение накапливалось бы.
         match crate::screen_blur::set_capture_exclusion(&window, wanted) {
-            Ok(()) => active = wanted,
+            Ok(()) => {
+                active = wanted;
+                if let Some(blur_svc) =
+                    app.try_state::<std::sync::Arc<crate::screen_blur::ScreenBlurService>>()
+                {
+                    let rect = if active {
+                        crate::screen_blur::overlay_capture_rect(&window)
+                    } else {
+                        None
+                    };
+                    blur_svc.set_active(active, rect);
+                }
+            }
             Err(error) => blur_error = Some(error),
         }
     }
@@ -508,6 +545,11 @@ pub fn set_overlay_enabled(app: &AppHandle, enabled: bool) -> AppResult<bool> {
                 .state::<OverlayController>()
                 .with(|state| std::mem::replace(&mut state.blur_active, false))?;
             if blur_was_active {
+                if let Some(blur_svc) =
+                    app.try_state::<std::sync::Arc<crate::screen_blur::ScreenBlurService>>()
+                {
+                    blur_svc.set_active(false, None);
+                }
                 crate::screen_blur::set_capture_exclusion(&window, false)?;
             }
             window.hide()?;
@@ -604,6 +646,10 @@ mod tests {
     }
 
     fn frame(opacity: f64, blur_px: f64, scope: DimmingScope) -> OverlayFrame {
+        let visual_style = match scope {
+            DimmingScope::Fullscreen => OverlayVisualStyle::VignetteBlur,
+            DimmingScope::Distractors => OverlayVisualStyle::Distractors,
+        };
         OverlayFrame {
             opacity,
             blur_px,
@@ -611,6 +657,10 @@ mod tests {
             threshold: 60.0,
             mode: "concentration".to_string(),
             scope,
+            visual_style,
+            has_visible_distractors: false,
+            show_pause_card: false,
+            show_cue_card: false,
             stream_active: true,
             contact_ok: true,
             artifact_frozen: false,
@@ -718,10 +768,20 @@ mod tests {
     }
 
     #[test]
-    fn blur_is_never_used_without_dimming_or_in_distractor_scope() {
+    fn blur_is_never_used_without_dimming_or_without_visible_distractors() {
         assert!(!blur_decision(true, &frame(0.0, 16.0, DimmingScope::Fullscreen), true));
         assert!(!blur_decision(false, &frame(0.5, 16.0, DimmingScope::Distractors), true));
         assert!(!blur_decision(true, &frame(0.5, 16.0, DimmingScope::Fullscreen), false));
+
+        // FullscreenDim (baseline dimming-only mode) must NEVER enable screen capture blur
+        let mut dim_only = frame(0.6, 16.0, DimmingScope::Fullscreen);
+        dim_only.visual_style = OverlayVisualStyle::FullscreenDim;
+        assert!(!blur_decision(false, &dim_only, true));
+
+        // Distractors mode enables blur ONLY when visible distractor windows exist
+        let mut visible_distractor = frame(0.5, 16.0, DimmingScope::Distractors);
+        visible_distractor.has_visible_distractors = true;
+        assert!(blur_decision(false, &visible_distractor, true));
     }
 
     #[test]

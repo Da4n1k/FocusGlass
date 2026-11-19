@@ -57,13 +57,23 @@ class BiquadHighPass {
 class BiquadNotch50Hz {
   private z1 = 0;
   private z2 = 0;
+  private readonly enabled: boolean;
   private readonly b0: number;
   private readonly b1: number;
   private readonly b2: number;
   private readonly a1: number;
   private readonly a2: number;
 
-  constructor(sampleRateHz: number = 250, notchFreqHz: number = 50, q: number = 10) {
+  constructor(sampleRateHz: number = 250, notchFreqHz: number = 50, q: number = 6) {
+    this.enabled = sampleRateHz > notchFreqHz * 2.1;
+    if (!this.enabled) {
+      this.b0 = 1;
+      this.b1 = 0;
+      this.b2 = 0;
+      this.a1 = 0;
+      this.a2 = 0;
+      return;
+    }
     const w0 = (2 * Math.PI * notchFreqHz) / sampleRateHz;
     const cosW0 = Math.cos(w0);
     const alpha = Math.sin(w0) / (2 * q);
@@ -77,6 +87,7 @@ class BiquadNotch50Hz {
   }
 
   public process(x: number): number {
+    if (!this.enabled) return x;
     const y = this.b0 * x + this.z1;
     this.z1 = this.b1 * x - this.a1 * y + this.z2;
     this.z2 = this.b2 * x - this.a2 * y;
@@ -86,6 +97,76 @@ class BiquadNotch50Hz {
   public reset(): void {
     this.z1 = 0;
     this.z2 = 0;
+  }
+}
+
+class BiquadLowPass {
+  private z1 = 0;
+  private z2 = 0;
+  private readonly enabled: boolean;
+  private readonly b0: number;
+  private readonly b1: number;
+  private readonly b2: number;
+  private readonly a1: number;
+  private readonly a2: number;
+
+  constructor(
+    sampleRateHz: number = 250,
+    cutoffHz: number = 35,
+    q: number = Math.SQRT1_2
+  ) {
+    this.enabled = sampleRateHz > cutoffHz * 2.2;
+    if (!this.enabled) {
+      this.b0 = 1;
+      this.b1 = 0;
+      this.b2 = 0;
+      this.a1 = 0;
+      this.a2 = 0;
+      return;
+    }
+    const w0 = (2 * Math.PI * cutoffHz) / sampleRateHz;
+    const cosW0 = Math.cos(w0);
+    const alpha = Math.sin(w0) / (2 * q);
+    const a0 = 1 + alpha;
+
+    this.b0 = ((1 - cosW0) / 2) / a0;
+    this.b1 = (1 - cosW0) / a0;
+    this.b2 = ((1 - cosW0) / 2) / a0;
+    this.a1 = (-2 * cosW0) / a0;
+    this.a2 = (1 - alpha) / a0;
+  }
+
+  public process(x: number): number {
+    if (!this.enabled) return x;
+    const y = this.b0 * x + this.z1;
+    this.z1 = this.b1 * x - this.a1 * y + this.z2;
+    this.z2 = this.b2 * x - this.a2 * y;
+    return y;
+  }
+
+  public reset(): void {
+    this.z1 = 0;
+    this.z2 = 0;
+  }
+}
+
+/** Canonical 4th-order Butterworth low-pass cascade (maximally flat 4–30 Hz EEG passband, -24 dB/oct rolloff). */
+class ButterworthLowPass4 {
+  private readonly stage1: BiquadLowPass;
+  private readonly stage2: BiquadLowPass;
+
+  constructor(sampleRateHz: number = 250, cutoffHz: number = 35) {
+    this.stage1 = new BiquadLowPass(sampleRateHz, cutoffHz, 0.541196100146197);
+    this.stage2 = new BiquadLowPass(sampleRateHz, cutoffHz, 1.3065629648763766);
+  }
+
+  public process(x: number): number {
+    return this.stage2.process(this.stage1.process(x));
+  }
+
+  public reset(): void {
+    this.stage1.reset();
+    this.stage2.reset();
   }
 }
 
@@ -104,7 +185,8 @@ export interface BipolarProcessingSnapshot {
  * Real-time 4-channel BrainBit signal processor:
  * - Differential bipolar derivations: Left (O1 - T3) and Right (O2 - T4)
  * - 2nd-order 1.5 Hz Butterworth HPF per hemisphere (removes dry-electrode DC offset & drift)
- * - 2nd-order 50 Hz IIR notch filter per hemisphere
+ * - 2nd-order 50 Hz IIR notch filter (Q=6, covers 49.5–50.5 Hz mains spread)
+ * - 4th-order 35 Hz Butterworth LPF per hemisphere (rejects out-of-band EMI & high-frequency EMG)
  * - Per-hemisphere amplitude (> 110 uV, BrainBit SDK art_bord) & step (> 75 uV) artifact rejection
  * - 1-second (250-sample) Hamming-windowed Goertzel band power estimation (Theta 4-7 Hz, Alpha 8-13 Hz, Beta 14-30 Hz)
  */
@@ -119,6 +201,8 @@ export class EEGSignalProcessor {
   private readonly hpfRight: BiquadHighPass;
   private readonly notchLeft: BiquadNotch50Hz;
   private readonly notchRight: BiquadNotch50Hz;
+  private readonly lpfLeft: ButterworthLowPass4;
+  private readonly lpfRight: ButterworthLowPass4;
   private readonly hamming: Float64Array;
   private readonly goertzelCoeffs: Map<number, { coeff: number; cosW: number; sinW: number }> =
     new Map();
@@ -154,8 +238,10 @@ export class EEGSignalProcessor {
 
     this.hpfLeft = new BiquadHighPass(sampleRateHz, 1.5, Math.SQRT1_2);
     this.hpfRight = new BiquadHighPass(sampleRateHz, 1.5, Math.SQRT1_2);
-    this.notchLeft = new BiquadNotch50Hz(sampleRateHz, 50, 10);
-    this.notchRight = new BiquadNotch50Hz(sampleRateHz, 50, 10);
+    this.notchLeft = new BiquadNotch50Hz(sampleRateHz, 50, 6);
+    this.notchRight = new BiquadNotch50Hz(sampleRateHz, 50, 6);
+    this.lpfLeft = new ButterworthLowPass4(sampleRateHz, 35);
+    this.lpfRight = new ButterworthLowPass4(sampleRateHz, 35);
 
     this.hamming = new Float64Array(this.windowSize);
     for (let n = 0; n < this.windowSize; n++) {
@@ -177,6 +263,8 @@ export class EEGSignalProcessor {
     this.hpfRight.reset();
     this.notchLeft.reset();
     this.notchRight.reset();
+    this.lpfLeft.reset();
+    this.lpfRight.reset();
     this.leftBuffer = [];
     this.rightBuffer = [];
     this.prevLeftFiltered = null;
@@ -191,8 +279,10 @@ export class EEGSignalProcessor {
     const leftRaw = rawChannels.o1 - rawChannels.t3;
     const rightRaw = rawChannels.o2 - rawChannels.t4;
 
-    const leftFiltered = this.notchLeft.process(this.hpfLeft.process(leftRaw));
-    const rightFiltered = this.notchRight.process(this.hpfRight.process(rightRaw));
+    const leftFiltered = this.lpfLeft.process(this.notchLeft.process(this.hpfLeft.process(leftRaw)));
+    const rightFiltered = this.lpfRight.process(
+      this.notchRight.process(this.hpfRight.process(rightRaw))
+    );
 
     const leftContactOk = signalQuality.t3 && signalQuality.o1;
     const rightContactOk = signalQuality.t4 && signalQuality.o2;

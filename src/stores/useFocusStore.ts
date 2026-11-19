@@ -25,6 +25,11 @@ import { simulationEngine } from '../services/simulationEngine';
 import { audioFeedback } from '../services/audioFeedback';
 import { tauriBridge } from '../services/tauriBridge';
 import { FitStabilityTracker } from '../services/headbandFitCheck';
+import {
+  EMPTY_STABILIZED_VISUALS,
+  OverlayVisualStabilizer,
+  type StabilizedOverlayVisuals,
+} from '../services/overlayVisualPolicy';
 import { areAllElectrodesUsable } from '../services/signalQuality';
 import {
   createSessionRepository,
@@ -172,6 +177,8 @@ interface FocusStoreState {
   // Smart distraction blocking
   distractionSupported: boolean;
   foregroundWindow: ForegroundWindowInfo | null;
+  thresholdBlurActive: boolean;
+  overlayVisuals: StabilizedOverlayVisuals;
 
   // BrainBit BLE & Fit Check
   fitHoldMs: number;
@@ -239,8 +246,38 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
   let lastOverlayPublishAt = 0;
   let overlayErrorReported = false;
   let lastAutosavedDuration = -1;
+  const overlayStabilizer = new OverlayVisualStabilizer();
+  let latestOverlayVisuals: StabilizedOverlayVisuals = { ...EMPTY_STABILIZED_VISUALS };
   let simDumpQueue: DumpSampleInput[] = [];
   let simDumpPackSeq = 0;
+
+  const monotonicNowMs = (): number =>
+    typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+  const updateStabilizedOverlayVisuals = (
+    feedbackState: BiofeedbackFeedbackState,
+    settings: FocusGlassSettings,
+    deviceStatus: DeviceStatus
+  ): StabilizedOverlayVisuals => {
+    const isSimulator = settings.deviceSource === 'simulator';
+    const streamActive = isSimulator || deviceStatus.connected;
+    const isFitCheckActive = !isSimulator && deviceStatus.streamMode === 'resist';
+    const hardClear = !streamActive || isFitCheckActive;
+    const canDim = !hardClear && feedbackState.isContactOk && feedbackState.isDimmingActive;
+    latestOverlayVisuals = overlayStabilizer.update(
+      {
+        visualMode: settings.overlayMode,
+        canDim,
+        hardClear,
+        deficit: feedbackState.deficit,
+        rawOpacity: feedbackState.overlayOpacity,
+        maxOpacity: settings.dimmingMaxOpacity,
+        blurRadiusSetting: settings.blurRadius,
+      },
+      monotonicNowMs()
+    );
+    return latestOverlayVisuals;
+  };
 
   const flushSimulatorDumpQueue = (force = false): void => {
     if (simDumpQueue.length === 0) return;
@@ -320,22 +357,27 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
   const buildOverlayFrame = (): OverlayFrame => {
     const state = get();
-    const { feedbackState, settings, deviceStatus, telemetry } = state;
+    const { feedbackState, settings, deviceStatus, telemetry, foregroundWindow } = state;
     const isSimulator = settings.deviceSource === 'simulator';
     const streamActive = isSimulator || deviceStatus.connected;
-    const isFitCheckActive = !isSimulator && deviceStatus.streamMode === 'resist';
-    const canDim =
-      streamActive &&
-      !isFitCheckActive &&
-      feedbackState.isContactOk &&
-      feedbackState.isDimmingActive;
+    const visuals = latestOverlayVisuals;
+    const hasVisibleDistractors =
+      settings.overlayMode === 'distractors' &&
+      Boolean(
+        (foregroundWindow?.distractorRegions && foregroundWindow.distractorRegions.length > 0) ||
+          (foregroundWindow?.isDistractor && foregroundWindow.overlayRect)
+      );
     return {
-      opacity: canDim ? feedbackState.overlayOpacity : 0,
-      blurPx: canDim ? feedbackState.blurRadius : 0,
+      opacity: visuals.opacity,
+      blurPx: visuals.blurPx,
       metric: feedbackState.smoothedMetric,
       threshold: Math.round(feedbackState.effectiveThreshold ?? settings.threshold),
       mode: settings.mode,
       scope: settings.dimmingScope,
+      visualStyle: settings.overlayMode,
+      hasVisibleDistractors,
+      showPauseCard: visuals.showPauseCard,
+      showCueCard: visuals.showCueCard,
       streamActive,
       contactOk: feedbackState.isContactOk,
       artifactFrozen: feedbackState.isArtifactFrozen,
@@ -418,12 +460,20 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     audioFeedback.sync(shouldPlayAudio, feedbackState.audioVolume);
 
+    const visualsForStore = updateStabilizedOverlayVisuals(
+      feedbackState,
+      state.settings,
+      state.deviceStatus
+    );
+
     set({
       telemetry,
       feedbackState,
       sessionStats,
       activePreset: simulationEngine.getPreset(),
       isPaused: simulationEngine.getIsPaused(),
+      thresholdBlurActive: visualsForStore.thresholdBlurActive,
+      overlayVisuals: visualsForStore,
     });
 
     if (
@@ -493,6 +543,11 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     if (!status.connected || status.streamMode !== 'signal') {
       audioFeedback.sync(false, 0);
     }
+    const visuals = updateStabilizedOverlayVisuals(get().feedbackState, get().settings, status);
+    set({
+      thresholdBlurActive: visuals.thresholdBlurActive,
+      overlayVisuals: visuals,
+    });
     publishOverlay();
   });
 
@@ -535,9 +590,12 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       showNotice('error', error?.message ?? 'Unknown backend error')
     );
     void tauriBridge.on<HudAction>('hud-action', handleHudAction);
-    void tauriBridge.on<ForegroundWindowInfo | null>('foreground-window', (info) =>
-      set({ foregroundWindow: info })
-    );
+    void tauriBridge.on<ForegroundWindowInfo | null>('foreground-window', (info) => {
+      set({ foregroundWindow: info });
+      if (get().settings.overlayMode === 'distractors') {
+        publishOverlay();
+      }
+    });
     void tauriBridge.on<null>('quit-requested', () => {
       void get().quit();
     });
@@ -597,7 +655,16 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         audioFeedback.sync(false, 0);
       }
 
-      set({ settings: updated });
+      const refreshedVisuals = updateStabilizedOverlayVisuals(
+        get().feedbackState,
+        updated,
+        get().deviceStatus
+      );
+      set({
+        settings: updated,
+        thresholdBlurActive: refreshedVisuals.thresholdBlurActive,
+        overlayVisuals: refreshedVisuals,
+      });
 
       if (newSettings.deviceSource && newSettings.deviceSource !== current.deviceSource) {
         if (get().dumpStatus.recording) {
@@ -607,7 +674,16 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         fitStability.reset();
         set({ fitHoldMs: 0, fitVerified: false, lastFitResistance: null });
         void tauriBridge.setDeviceSource(newSettings.deviceSource).then((deviceStatus) => {
-          set({ deviceStatus });
+          const nextVisuals = updateStabilizedOverlayVisuals(
+            get().feedbackState,
+            get().settings,
+            deviceStatus
+          );
+          set({
+            deviceStatus,
+            thresholdBlurActive: nextVisuals.thresholdBlurActive,
+            overlayVisuals: nextVisuals,
+          });
           publishOverlay();
         });
       }
@@ -757,6 +833,8 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     distractionSupported: false,
     foregroundWindow: null,
+    thresholdBlurActive: false,
+    overlayVisuals: { ...EMPTY_STABILIZED_VISUALS },
 
     fitHoldMs: 0,
     fitVerified: false,
@@ -863,7 +941,15 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         const status = await tauriBridge.disconnectBrainBit();
         fitStability.reset();
         audioFeedback.sync(false, 0);
-        set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false, lastFitResistance: null });
+        const visuals = updateStabilizedOverlayVisuals(get().feedbackState, get().settings, status);
+        set({
+          deviceStatus: status,
+          fitHoldMs: 0,
+          fitVerified: false,
+          lastFitResistance: null,
+          thresholdBlurActive: visuals.thresholdBlurActive,
+          overlayVisuals: visuals,
+        });
         publishOverlay();
       } catch (err) {
         showNotice('error', `Ошибка отключения BrainBit: ${errorText(err)}`);
@@ -885,7 +971,14 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         fitStability.reset();
         audioFeedback.sync(false, 0);
         const status = await tauriBridge.setBrainBitMode('resist');
-        set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false });
+        const visuals = updateStabilizedOverlayVisuals(get().feedbackState, get().settings, status);
+        set({
+          deviceStatus: status,
+          fitHoldMs: 0,
+          fitVerified: false,
+          thresholdBlurActive: visuals.thresholdBlurActive,
+          overlayVisuals: visuals,
+        });
         publishOverlay();
       } catch (err) {
         showNotice('error', `Не удалось запустить проверку посадки: ${errorText(err)}`);
@@ -942,13 +1035,18 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
       simulationEngine.resetSession();
       audioFeedback.sync(false, 0);
+      overlayStabilizer.reset(monotonicNowMs());
+      latestOverlayVisuals = { ...EMPTY_STABILIZED_VISUALS };
       lastAutosavedDuration = -1;
       set({
         sessionHistory: updatedHistory,
         sessionId: newSessionId(),
         sessionStartedAt: new Date().toISOString(),
         sessionStats: simulationEngine.getSessionStats(),
+        thresholdBlurActive: false,
+        overlayVisuals: latestOverlayVisuals,
       });
+      publishOverlay();
     },
 
     persistActiveSession,

@@ -87,11 +87,14 @@ describe('EEGSignalProcessor — Bipolar Montage, 50 Hz Notch & Spectral Powers'
     assert.equal(snap.bothSidesArtifacted, false);
     assert.ok(snap.spectrum.beta > 85);
 
-    // Bilateral EOG spike > 110 uV
-    const spikeSnap = dsp.processSample(
-      { t3: -95, t4: -95, o1: 95, o2: 95 },
-      ALL_OK
-    );
+    // Bilateral EOG blink pulse > 110 uV (realistic 24 ms sustained rise through 1.5–35 Hz bandpass)
+    let spikeSnap = snap;
+    for (let n = 0; n < 6; n++) {
+      spikeSnap = dsp.processSample(
+        { t3: -95, t4: -95, o1: 95, o2: 95 },
+        ALL_OK
+      );
+    }
     assert.equal(spikeSnap.leftArtifact, true);
     assert.equal(spikeSnap.rightArtifact, true);
     assert.equal(spikeSnap.bothSidesArtifacted, true);
@@ -154,6 +157,44 @@ describe('EEGSignalProcessor — Bipolar Montage, 50 Hz Notch & Spectral Powers'
     assert.ok(
       lastSnap.spectrum.alpha > 90,
       `Expected Alpha relative power > 90% despite 120 mV DC offset, got ${lastSnap.spectrum.alpha}%`
+    );
+  });
+
+  it('rejects out-of-band switching-PSU EMI (66.75 Hz + 116.5 Hz + 50.25 Hz) without false artifact freeze', () => {
+    const dsp = new EEGSignalProcessor(250);
+    const fs = 250;
+    let lastSnap = dsp.processSample({ t3: 0, t4: 0, o1: 0, o2: 0 }, ALL_OK);
+    let postSettleArtifacts = 0;
+
+    // 2.0 s of 22 uV 20 Hz Beta overlaid with severe EMI seen on real dry BrainBit T4
+    for (let n = 1; n < 500; n++) {
+      const t = n / fs;
+      const beta20 = 22 * Math.sin(2 * Math.PI * 20 * t);
+      const emi =
+        90 * Math.sin(2 * Math.PI * 50.25 * t) +
+        90 * Math.sin(2 * Math.PI * 66.75 * t) +
+        60 * Math.sin(2 * Math.PI * 116.5 * t);
+      lastSnap = dsp.processSample(
+        { t3: 0, t4: -emi, o1: beta20, o2: beta20 },
+        ALL_OK
+      );
+      if (n >= 100 && lastSnap.rightArtifact) {
+        postSettleArtifacts += 1;
+      }
+    }
+
+    assert.equal(
+      postSettleArtifacts,
+      0,
+      `Out-of-band EMI must not trigger false artifacts after settle (got ${postSettleArtifacts})`
+    );
+    assert.ok(
+      Math.abs(lastSnap.bipolarRightUv) <= 32,
+      `Expected heavily attenuated EMI on right hemisphere <= 32 uV, got ${lastSnap.bipolarRightUv}`
+    );
+    assert.ok(
+      lastSnap.spectrum.beta > 85,
+      `Expected 20 Hz Beta passband preserved (> 85%), got ${lastSnap.spectrum.beta}%`
     );
   });
 });

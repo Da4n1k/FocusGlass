@@ -1,8 +1,8 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ForegroundWindowInfo, OverlayFrame, PixelRect } from './services/eegTypes';
 import { tauriBridge } from './services/tauriBridge';
-import { DimLayer } from './components/overlay/BiofeedbackOverlay';
-import { FocusBarHUDView } from './components/hud/FocusBarHUD';
+import { DimLayer } from './components/overlay/DimLayer';
+import { FocusBarHUDView } from './components/hud/FocusBarHUDView';
 
 function reportError(context: string, err: unknown): void {
   console.error(`[Overlay] ${context}:`, err);
@@ -19,9 +19,12 @@ function toCssRect(rect: PixelRect): PixelRect {
   };
 }
 
-/** Адрес снимка экрана под оверлеем (схема `fgcap`, см. `screen_blur.rs`). */
+/** Адрес снимка экрана под оверлеем (асинхронная схема `fgcap`, см. `screen_blur.rs`). */
 const CAPTURE_URL = 'http://fgcap.localhost/frame';
-const CAPTURE_INTERVAL_MS = 200;
+/** Целевой интервал опроса DXGI/Async-GDI кадров (~30 FPS; при статичном экране приходит 204 без декодирования). */
+const CAPTURE_INTERVAL_MS = 33;
+/** Фиксированный запас краёв для максимального blur (32 px): исключает layout reflow при смене blurPx. */
+const BLUR_OVERSCAN_PX = 64;
 
 /** Доля размытой копии экрана поверх резкого оригинала: 0 при 2 px, 1 начиная с 5 px. */
 export function blurLayerOpacity(blurPx: number): number {
@@ -29,68 +32,155 @@ export function blurLayerOpacity(blurPx: number): number {
 }
 
 /**
- * Размытие окон других программ: уменьшенный снимок экрана от Rust-ядра
- * растягивается на весь оверлей и размывается CSS-фильтром нужного радиуса.
+ * Размытие окон других программ: уменьшенный снимок экрана от DXGI/Async-GDI
+ * фонового сервиса декодируется вне главного потока (`createImageBitmap`) и рисуется
+ * на `<canvas>` с фиксированным overscan (0 reflow, 0 работы при `204 No Content`).
  */
-const BlurBackdrop: React.FC<{ blurPx: number }> = ({ blurPx }) => {
+const BlurBackdrop: React.FC<{ blurPx: number; maskMode: 'full' | 'vignette' }> = ({
+  blurPx,
+  maskMode,
+}) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
+    const ctx = canvas?.getContext('2d', { alpha: false });
     if (!canvas || !ctx) return;
 
     let disposed = false;
-    let loading = false;
+    let inFlight = false;
+    let lastSeq = 0;
     let counter = 0;
     let errorLogged = false;
+    let rafId: number | null = null;
+    let pendingBitmap: ImageBitmap | null = null;
+    let pendingBackend = '';
+    const controller = new AbortController();
 
-    const refresh = () => {
-      if (loading) return; // предыдущий снимок ещё грузится — не копим очередь
-      loading = true;
-      const image = new Image();
-      image.onload = () => {
-        loading = false;
-        if (disposed) return;
-        if (canvas.width !== image.naturalWidth || canvas.height !== image.naturalHeight) {
-          canvas.width = image.naturalWidth;
-          canvas.height = image.naturalHeight;
-        }
-        ctx.drawImage(image, 0, 0);
-        canvas.dataset.frames = String(counter);
-      };
-      image.onerror = () => {
-        loading = false;
-        if (!errorLogged) {
-          errorLogged = true;
-          reportError('screen capture', new Error('capture frame failed to load'));
-        }
-      };
-      counter += 1;
-      image.src = `${CAPTURE_URL}?n=${counter}`;
+    const paintPending = () => {
+      rafId = null;
+      const bitmap = pendingBitmap;
+      pendingBitmap = null;
+      if (!bitmap) return;
+      if (disposed) {
+        bitmap.close();
+        return;
+      }
+      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+      }
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      canvas.dataset.frames = String(counter);
+      if (pendingBackend) {
+        canvas.dataset.backend = pendingBackend;
+      }
     };
 
-    refresh();
-    const timer = window.setInterval(refresh, CAPTURE_INTERVAL_MS);
+    const refresh = async () => {
+      if (disposed || inFlight) return;
+      inFlight = true;
+      try {
+        const query = lastSeq > 0 ? `?after=${lastSeq}&n=${++counter}` : `?n=${++counter}`;
+        const res = await fetch(`${CAPTURE_URL}${query}`, {
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        if (disposed) return;
+
+        if (res.status === 204) {
+          // Экран не изменился — пропускаем декодирование и перерисовку (0% нагрузки).
+          return;
+        }
+        if (!res.ok) {
+          if (res.status !== 409 && !errorLogged) {
+            errorLogged = true;
+            reportError('screen capture', new Error(`HTTP ${res.status}`));
+          }
+          return;
+        }
+
+        const seqHeader = Number(res.headers.get('X-Frame-Seq'));
+        if (Number.isFinite(seqHeader) && seqHeader > 0) {
+          lastSeq = seqHeader;
+        }
+        pendingBackend = res.headers.get('X-Capture-Backend') ?? '';
+
+        const blob = await res.blob();
+        if (disposed) return;
+        const bitmap = await createImageBitmap(blob);
+        if (disposed) {
+          bitmap.close();
+          return;
+        }
+
+        if (pendingBitmap) {
+          pendingBitmap.close();
+        }
+        pendingBitmap = bitmap;
+        errorLogged = false;
+        if (rafId === null) {
+          rafId = window.requestAnimationFrame(paintPending);
+        }
+      } catch (err: unknown) {
+        if (!disposed && !errorLogged) {
+          errorLogged = true;
+          reportError('screen capture', err);
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void refresh();
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, CAPTURE_INTERVAL_MS);
+
     return () => {
       disposed = true;
+      controller.abort();
       window.clearInterval(timer);
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+      if (pendingBitmap) {
+        pendingBitmap.close();
+        pendingBitmap = null;
+      }
     };
   }, []);
 
+  const vignetteMask =
+    maskMode === 'vignette'
+      ? 'radial-gradient(ellipse 62% 62% at 50% 50%, transparent 45%, rgba(0, 0, 0, 0.45) 70%, black 92%)'
+      : undefined;
+
+  // Квантуем до 0.5 px, чтобы GPU-фильтр не пересобирался от субпиксельного шума.
+  const quantizedBlur = Math.round(Math.max(0, Math.min(32, blurPx)) * 2) / 2;
+
   return (
-    <canvas
-      ref={canvasRef}
-      className="fixed pointer-events-none z-30 transition-opacity duration-500"
-      style={{
-        // Запас по краям скрывает прозрачную кайму, которую даёт blur() у границ.
-        inset: -blurPx * 2,
-        width: `calc(100% + ${blurPx * 4}px)`,
-        height: `calc(100% + ${blurPx * 4}px)`,
-        filter: `blur(${blurPx}px)`,
-        opacity: blurLayerOpacity(blurPx),
-      }}
-    />
+    <div
+      className="fixed inset-0 pointer-events-none z-30 overflow-hidden"
+      style={
+        vignetteMask
+          ? { maskImage: vignetteMask, WebkitMaskImage: vignetteMask }
+          : undefined
+      }
+    >
+      <canvas
+        ref={canvasRef}
+        className="fixed pointer-events-none transition-opacity duration-300 ease-out will-change-[filter,opacity]"
+        style={{
+          inset: -BLUR_OVERSCAN_PX,
+          width: `calc(100% + ${BLUR_OVERSCAN_PX * 2}px)`,
+          height: `calc(100% + ${BLUR_OVERSCAN_PX * 2}px)`,
+          filter: quantizedBlur > 0 ? `blur(${quantizedBlur}px)` : 'none',
+          opacity: blurLayerOpacity(blurPx),
+        }}
+      />
+    </div>
   );
 };
 
@@ -175,13 +265,23 @@ export const OverlayApp: React.FC = () => {
 
   if (!frame) return null;
 
-  const distractorScope = frame.scope === 'distractors';
-  const distractorRect =
-    distractorScope && foreground?.isDistractor && foreground.overlayRect
-      ? toCssRect(foreground.overlayRect)
-      : null;
-  // В режиме «только отвлекатели» без отвлекающего окна на переднем плане экран чист.
-  const opacity = distractorScope && !distractorRect ? 0 : frame.opacity;
+  const distractorScope = frame.scope === 'distractors' || frame.visualStyle === 'distractors';
+  const distractorTargets: Array<{ rect: PixelRect; label?: string }> = distractorScope
+    ? foreground?.distractorRegions && foreground.distractorRegions.length > 0
+      ? foreground.distractorRegions
+          .filter((r): r is typeof r & { overlayRect: PixelRect } => r.overlayRect !== null)
+          .map((r) => ({ rect: toCssRect(r.overlayRect), label: r.matchedPattern }))
+      : foreground?.isDistractor && foreground.overlayRect
+      ? [{ rect: toCssRect(foreground.overlayRect), label: foreground.matchedPattern ?? undefined }]
+      : []
+    : [];
+
+  // В режиме «только отвлекатели» без видимых отвлекающих окон экран полностью чист.
+  const opacity = distractorScope && distractorTargets.length === 0 ? 0 : frame.opacity;
+  const showBlur =
+    Boolean(frame.blurActive) &&
+    frame.blurPx > 0 &&
+    (!distractorScope || distractorTargets.length > 0);
 
   const act = (context: string, promise: Promise<unknown>) => {
     promise.catch((err: unknown) => reportError(context, err));
@@ -189,15 +289,49 @@ export const OverlayApp: React.FC = () => {
 
   return (
     <div className="fixed inset-0 overflow-hidden font-sans">
-      {frame.blurActive && <BlurBackdrop blurPx={frame.blurPx} />}
+      {showBlur && distractorScope ? (
+        <>
+          <svg className="fixed inset-0 w-0 h-0 pointer-events-none" aria-hidden="true">
+            <defs>
+              <clipPath id="fg-distractor-clip" clipPathUnits="userSpaceOnUse">
+                {distractorTargets.map((item, idx) => (
+                  <rect
+                    key={idx}
+                    x={item.rect.x}
+                    y={item.rect.y}
+                    width={item.rect.width}
+                    height={item.rect.height}
+                    rx={10}
+                    ry={10}
+                  />
+                ))}
+              </clipPath>
+            </defs>
+          </svg>
+          <div
+            className="fixed inset-0 pointer-events-none z-30"
+            style={{ clipPath: 'url(#fg-distractor-clip)' }}
+          >
+            <BlurBackdrop blurPx={frame.blurPx} maskMode="full" />
+          </div>
+        </>
+      ) : showBlur ? (
+        <BlurBackdrop
+          blurPx={frame.blurPx}
+          maskMode={frame.visualStyle === 'vignette_blur' ? 'vignette' : 'full'}
+        />
+      ) : null}
+
       <DimLayer
         opacity={opacity}
         cssBlurPx={0}
         mode={frame.mode}
         metric={frame.metric}
         threshold={frame.threshold}
-        region={distractorRect}
-        regionLabel={foreground?.matchedPattern ?? undefined}
+        visualStyle={frame.visualStyle}
+        showPauseCard={frame.showPauseCard}
+        showCueCard={frame.showCueCard}
+        regions={distractorScope ? distractorTargets : undefined}
       />
 
       {hudVisible && (

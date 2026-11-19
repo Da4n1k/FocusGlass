@@ -13,7 +13,8 @@ use crate::bci::recorder::{
 };
 use crate::bci::BrainBitDriver;
 use crate::distraction::{
-    DistractionConfig, DistractionState, DistractionStatus, ForegroundWindowInfo,
+    self, DistractionConfig, DistractionState, DistractionStatus, ForegroundWindowInfo,
+    RunningWindowInfo,
 };
 use crate::error::{AppError, AppResult};
 use crate::overlay::{self, OverlayController, OverlayFrame, PixelRect, Rect};
@@ -699,6 +700,13 @@ pub fn get_foreground_window(
     state: State<'_, Arc<DistractionState>>,
 ) -> AppResult<Option<ForegroundWindowInfo>> {
     state.last()
+}
+
+#[tauri::command]
+pub fn list_running_windows(
+    state: State<'_, Arc<DistractionState>>,
+) -> AppResult<Vec<RunningWindowInfo>> {
+    distraction::list_running_windows(&state)
 }
 
 #[cfg(test)]

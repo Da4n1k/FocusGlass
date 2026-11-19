@@ -67,7 +67,7 @@ export const BentoMetricGrid: React.FC = () => {
                   <p className="text-xs text-slate-400">
                     {isSimulator
                       ? 'Simulated BCI Stream (250 Hz · Smoothing Window Active)'
-                      : 'BrainBit BLE Telemetry (250 Hz · 1.5 Hz HPF + 50 Hz Notch)'}
+                      : 'BrainBit BLE Telemetry (250 Hz · 1.5–35 Hz Bandpass + 50 Hz Notch)'}
                   </p>
                 </div>
               </div>

@@ -7,6 +7,7 @@ export const DEFAULT_SETTINGS: FocusGlassSettings = {
   sensitivitySeconds: 2.0,
   dimmingMaxOpacity: 0.7,
   blurRadius: 16,
+  overlayMode: 'fullscreen_dim',
   dimmingScope: 'fullscreen',
   distractorPatterns: [
     'telegram',
@@ -59,6 +60,13 @@ function pickEnum<T extends string>(value: unknown, allowed: readonly T[], fallb
     : fallback;
 }
 
+const OVERLAY_MODES = [
+  'fullscreen_dim',
+  'vignette_blur',
+  'threshold_blur',
+  'distractors',
+] as const;
+
 /**
  * Builds a valid FocusGlassSettings from untrusted input (localStorage, IPC, partial updates).
  * Every field is validated independently: out-of-range numbers are clamped, while values of
@@ -73,11 +81,32 @@ export function sanitizeSettings(
       ? (input as Record<string, unknown>)
       : {};
 
+  const hasExplicitOverlayMode =
+    typeof src.overlayMode === 'string' &&
+    (OVERLAY_MODES as readonly string[]).includes(src.overlayMode);
+  const hasExplicitScope = src.dimmingScope === 'fullscreen' || src.dimmingScope === 'distractors';
+
+  let overlayMode = pickEnum(src.overlayMode, OVERLAY_MODES, base.overlayMode);
+  let dimmingScope = pickEnum(src.dimmingScope, ['fullscreen', 'distractors'] as const, base.dimmingScope);
+
+  if (hasExplicitOverlayMode) {
+    dimmingScope = overlayMode === 'distractors' ? 'distractors' : 'fullscreen';
+  } else if (hasExplicitScope) {
+    if (dimmingScope === 'distractors') {
+      overlayMode = 'distractors';
+    } else if (overlayMode === 'distractors') {
+      overlayMode = 'fullscreen_dim';
+    }
+  } else {
+    dimmingScope = overlayMode === 'distractors' ? 'distractors' : 'fullscreen';
+  }
+
   const result: FocusGlassSettings = {
     ...base,
     mode: pickEnum(src.mode, ['concentration', 'relaxation'] as const, base.mode),
     deviceSource: pickEnum(src.deviceSource, ['simulator', 'bluetooth'] as const, base.deviceSource),
-    dimmingScope: pickEnum(src.dimmingScope, ['fullscreen', 'distractors'] as const, base.dimmingScope),
+    overlayMode,
+    dimmingScope,
     distractorPatterns: Array.isArray(src.distractorPatterns)
       ? src.distractorPatterns.filter((p): p is string => typeof p === 'string')
       : [...base.distractorPatterns],

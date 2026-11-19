@@ -61,6 +61,7 @@ const NoticeToast: React.FC = () => {
 const InPageOverlay: React.FC = () => {
   const {
     feedbackState,
+    overlayVisuals,
     settings,
     deviceStatus,
     telemetry,
@@ -78,22 +79,19 @@ const InPageOverlay: React.FC = () => {
 
   const isSimulator = settings.deviceSource === 'simulator';
   const streamActive = isSimulator || deviceStatus.connected;
-  const isFitCheckActive = !isSimulator && deviceStatus.streamMode === 'resist';
-  const canDim =
-    streamActive &&
-    !isFitCheckActive &&
-    feedbackState.isContactOk &&
-    feedbackState.isDimmingActive;
   const threshold = Math.round(feedbackState.effectiveThreshold ?? settings.threshold);
 
   return (
     <>
       <DimLayer
-        opacity={canDim ? feedbackState.overlayOpacity : 0}
-        cssBlurPx={canDim ? feedbackState.blurRadius : 0}
+        opacity={overlayVisuals.opacity}
+        cssBlurPx={overlayVisuals.blurPx}
         mode={settings.mode}
         metric={feedbackState.smoothedMetric}
         threshold={threshold}
+        visualStyle={settings.overlayMode}
+        showPauseCard={overlayVisuals.showPauseCard}
+        showCueCard={overlayVisuals.showCueCard}
       />
       {viewMode === 'hud' && (
         <FocusBarHUDView
@@ -153,8 +151,8 @@ export const App: React.FC = () => {
 
   return (
     <div
-      className={`min-h-screen w-full relative flex flex-col font-sans overflow-x-hidden ${
-        !hideDashboardForHud ? 'dashboard-surface' : ''
+      className={`w-full relative flex flex-col font-sans overflow-hidden ${
+        !hideDashboardForHud ? 'h-screen dashboard-surface' : 'min-h-screen'
       }`}
     >
       {/* В браузере оверлей и HUD внутри страницы; на Linux при uncomposited X11 — fallback */}
@@ -166,14 +164,15 @@ export const App: React.FC = () => {
       {isSplitLinuxHud ? (
         <FocusBarHUD />
       ) : hideDashboardForHud ? null : (
-        /* Full Dashboard View */
-        <div className="relative z-10 flex flex-col flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 space-y-4">
-          {/* Top Liquid Glass App Bar */}
-          <GlassPanel
-            variant="primary"
-            className="px-5 py-3.5 flex items-center justify-between shadow-xl border-white/20"
-            data-tauri-drag-region
-          >
+        /* Full Dashboard View (pinned top bar + scrollable content area) */
+        <div className="relative z-10 flex flex-col flex-1 min-h-0 w-full">
+          {/* Pinned Liquid Glass App Bar */}
+          <div className="shrink-0 max-w-7xl mx-auto w-full px-4 md:px-6 pt-4 md:pt-5 pb-2">
+            <GlassPanel
+              variant="primary"
+              className="px-5 py-3.5 flex items-center justify-between shadow-xl border-white/20"
+              data-tauri-drag-region
+            >
             {/* Left: Branding & Logos */}
             <div className="flex items-center gap-4" data-tauri-drag-region>
               <div className="flex items-center gap-2.5">
@@ -308,55 +307,61 @@ export const App: React.FC = () => {
                 </div>
               )}
             </div>
-          </GlassPanel>
+            </GlassPanel>
+          </div>
 
-          {/* Main Dashboard Bento Grid */}
-          <main className="flex-1">
-            <BentoMetricGrid />
-          </main>
+          {/* Scrollable Dashboard Content */}
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+            <div className="max-w-7xl mx-auto w-full px-4 md:px-6 pt-2 pb-6 space-y-4">
+              {/* Main Dashboard Bento Grid */}
+              <main>
+                <BentoMetricGrid />
+              </main>
 
-          {/* Bottom Status Ribbon */}
-          <footer className="py-2 px-4 rounded-xl bg-slate-950/40 border border-white/5 backdrop-blur-md flex flex-wrap items-center justify-between text-[11px] text-slate-400">
-            <div className="flex items-center gap-3">
-              {isSimulator ? (
-                <span className="flex items-center gap-1.5 text-amber-300 font-mono">
-                  <Activity className="w-3 h-3" />
-                  {isPaused ? 'Simulator Paused' : '250 Hz Synthetic Telemetry'}
-                </span>
-              ) : isBleConnected ? (
-                <span className="flex items-center gap-1.5 text-emerald-400 font-mono">
-                  <Activity className="w-3 h-3" />
-                  {deviceStatus.streamMode === 'resist'
-                    ? 'BrainBit Fit Check (kΩ)'
-                    : '250 Hz BrainBit Stream'}
-                </span>
-              ) : (
-                <span className="flex items-center gap-1.5 text-rose-400 font-mono">
-                  <Activity className="w-3 h-3" />
-                  BrainBit BLE Disconnected
-                </span>
-              )}
-              <span>•</span>
-              <span className={activeSensorsCount === 4 ? 'text-slate-300' : 'text-amber-300'}>
-                Contact OK: {activeSensorsCount}/4 (T3, T4, O1, O2)
-              </span>
+              {/* Bottom Status Ribbon */}
+              <footer className="py-2 px-4 rounded-xl bg-slate-950/40 border border-white/5 backdrop-blur-md flex flex-wrap items-center justify-between text-[11px] text-slate-400">
+                <div className="flex items-center gap-3">
+                  {isSimulator ? (
+                    <span className="flex items-center gap-1.5 text-amber-300 font-mono">
+                      <Activity className="w-3 h-3" />
+                      {isPaused ? 'Simulator Paused' : '250 Hz Synthetic Telemetry'}
+                    </span>
+                  ) : isBleConnected ? (
+                    <span className="flex items-center gap-1.5 text-emerald-400 font-mono">
+                      <Activity className="w-3 h-3" />
+                      {deviceStatus.streamMode === 'resist'
+                        ? 'BrainBit Fit Check (kΩ)'
+                        : '250 Hz BrainBit Stream'}
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5 text-rose-400 font-mono">
+                      <Activity className="w-3 h-3" />
+                      BrainBit BLE Disconnected
+                    </span>
+                  )}
+                  <span>•</span>
+                  <span className={activeSensorsCount === 4 ? 'text-slate-300' : 'text-amber-300'}>
+                    Contact OK: {activeSensorsCount}/4 (T3, T4, O1, O2)
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <span>
+                    {isSimulator
+                      ? 'Keys 1-5: Demo Presets · Space: Pause'
+                      : 'Ctrl+Shift+G: Exit Click-Through'}
+                  </span>
+                  <span>•</span>
+                  <button
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="text-[#FF6600] hover:underline cursor-pointer"
+                  >
+                    Configure Biofeedback (БОС)
+                  </button>
+                </div>
+              </footer>
             </div>
-
-            <div className="flex items-center gap-3">
-              <span>
-                {isSimulator
-                  ? 'Keys 1-5: Demo Presets · Space: Pause'
-                  : 'Ctrl+Shift+G: Exit Click-Through'}
-              </span>
-              <span>•</span>
-              <button
-                onClick={() => setIsSettingsOpen(true)}
-                className="text-[#FF6600] hover:underline cursor-pointer"
-              >
-                Configure Biofeedback (БОС)
-              </button>
-            </div>
-          </footer>
+          </div>
         </div>
       )}
 

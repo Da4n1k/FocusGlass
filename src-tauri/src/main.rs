@@ -35,6 +35,9 @@ pub fn request_quit(app: &AppHandle) {
     if QUIT_IN_PROGRESS.swap(true, Ordering::SeqCst) {
         return;
     }
+    if let Some(blur_svc) = app.try_state::<Arc<screen_blur::ScreenBlurService>>() {
+        blur_svc.set_active(false, None);
+    }
     if app
         .emit_to(overlay::MAIN_LABEL, overlay::EVENT_QUIT_REQUESTED, ())
         .is_err()
@@ -156,9 +159,12 @@ fn emit_foreground_window(app: &AppHandle, info: Option<ForegroundWindowInfo>) -
     let info = match info {
         Some(mut info) => {
             let origin = overlay::overlay_window(app)?.outer_position()?;
-            info.overlay_rect = info
-                .screen_rect
-                .map(|r| r.translated(-f64::from(origin.x), -f64::from(origin.y)));
+            let dx = -f64::from(origin.x);
+            let dy = -f64::from(origin.y);
+            info.overlay_rect = info.screen_rect.map(|r| r.translated(dx, dy));
+            for region in &mut info.distractor_regions {
+                region.overlay_rect = Some(region.screen_rect.translated(dx, dy));
+            }
             Some(info)
         }
         None => None,
@@ -176,6 +182,7 @@ fn main() {
         .manage(overlay::OverlayState::default())
         .manage(commands::HudRestoreState::default())
         .manage(OverlayController::default())
+        .manage(Arc::new(screen_blur::ScreenBlurService::new()))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -185,9 +192,17 @@ fn main() {
                 })
                 .build(),
         )
-        .register_uri_scheme_protocol(screen_blur::CAPTURE_SCHEME, |ctx, _request| {
-            screen_blur::handle_capture_request(ctx.app_handle(), ctx.webview_label())
-        })
+        .register_asynchronous_uri_scheme_protocol(
+            screen_blur::CAPTURE_SCHEME,
+            |ctx, request, responder| {
+                screen_blur::handle_capture_request_async(
+                    ctx.app_handle().clone(),
+                    ctx.webview_label(),
+                    request,
+                    responder,
+                );
+            },
+        )
         .setup(move |app| {
             setup(app.handle(), restore_shortcut)?;
             Ok(())
@@ -236,6 +251,7 @@ fn main() {
             commands::sessions_clear,
             commands::set_distraction_config,
             commands::get_foreground_window,
+            commands::list_running_windows,
             overlay::get_overlay_info,
             overlay::set_overlay_visible,
         ])

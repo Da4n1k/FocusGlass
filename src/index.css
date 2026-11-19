@@ -107,16 +107,16 @@
 
 /* Custom Scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.4);
+  background: rgba(15, 23, 42, 0.45);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.24);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.42);
 }

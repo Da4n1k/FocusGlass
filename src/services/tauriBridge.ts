@@ -13,6 +13,7 @@ import type {
   OverlayInfo,
   PixelRect,
   RawBrainBitPacket,
+  RunningWindowInfo,
   SessionRecord,
   WindowState,
 } from './eegTypes';
@@ -471,6 +472,11 @@ class TauriBridge {
   public async getForegroundWindow(): Promise<ForegroundWindowInfo | null> {
     if (!this.isTauri()) return null;
     return this.invoke<ForegroundWindowInfo | null>('get_foreground_window');
+  }
+
+  public async listRunningWindows(): Promise<RunningWindowInfo[]> {
+    if (!this.isTauri()) return [];
+    return this.invoke<RunningWindowInfo[]>('list_running_windows');
   }
 }
 

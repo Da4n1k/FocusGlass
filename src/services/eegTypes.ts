@@ -51,14 +51,28 @@ export interface EEGTelemetry {
 /** What the overlay darkens: the whole screen or only distracting foreground windows. */
 export type DimmingScope = 'fullscreen' | 'distractors';
 
+/**
+ * Visual overlay concept agreed with Neurotech («не навреди»):
+ * - 'fullscreen_dim' : Smooth full-screen brightness dimming only (0 px blur, baseline TZ)
+ * - 'vignette_blur'  : Crisp center + blurred/dimmed peripheral vignette around screen edges
+ * - 'threshold_blur' : Gentle dim until trigger deficit, then dense unreadable blur (≥20 px) + «Сделай паузу»
+ * - 'distractors'    : Work windows stay crisp; only selected distractor windows dim/blur
+ */
+export type OverlayVisualMode =
+  | 'fullscreen_dim'
+  | 'vignette_blur'
+  | 'threshold_blur'
+  | 'distractors';
+
 export interface FocusGlassSettings {
   mode: 'concentration' | 'relaxation';
   deviceSource: 'simulator' | 'bluetooth';
   threshold: number;             // Target threshold % [10, 95] (default: 60)
   sensitivitySeconds: number;    // Moving average window [0.001, 10.0]s (default: 2.0)
   dimmingMaxOpacity: number;     // Maximum screen dimming opacity [0.05, 0.95] (default: 0.70)
-  blurRadius: number;            // Maximum vignette blur [0, 32]px (default: 16)
-  dimmingScope: DimmingScope;    // 'distractors' requires the Windows desktop shell
+  blurRadius: number;            // Maximum vignette / dense / distractor blur [0, 32]px (default: 16)
+  overlayMode: OverlayVisualMode; // Eye-safe overlay concept selector
+  dimmingScope: DimmingScope;    // Derived/legacy scope ('fullscreen' | 'distractors')
   distractorPatterns: string[];  // Substrings matched against process name / window title
   audioFeedbackEnabled: boolean; // Filtered pink-noise biofeedback modulation
   audioVolume: number;           // Master volume of audio feedback [0.0, 1.0] (default: 1.0)
@@ -214,6 +228,10 @@ export interface OverlayFrame {
   threshold: number;
   mode: 'concentration' | 'relaxation';
   scope: DimmingScope;
+  visualStyle: OverlayVisualMode;
+  hasVisibleDistractors: boolean;
+  showPauseCard: boolean;
+  showCueCard: boolean;
   streamActive: boolean;
   contactOk: boolean;
   artifactFrozen: boolean;
@@ -226,6 +244,25 @@ export interface OverlayFrame {
   blurActive?: boolean;
 }
 
+/** Visible unoccluded distractor window region (supports foreground & split-screen). */
+export interface DistractorRegion {
+  exe: string;
+  title: string;
+  matchedPattern: string;
+  screenRect: PixelRect;
+  overlayRect: PixelRect | null;
+}
+
+/** Running desktop window entry shown in Settings for 1-click distractor selection. */
+export interface RunningWindowInfo {
+  exe: string;
+  title: string;
+  isDistractor: boolean;
+  matchedPattern: string | null;
+  suggestedPattern: string;
+  isBrowser: boolean;
+}
+
 /** Foreground window reported by the Rust SetWinEventHook monitor. */
 export interface ForegroundWindowInfo {
   exe: string;
@@ -234,6 +271,7 @@ export interface ForegroundWindowInfo {
   matchedPattern: string | null;
   screenRect: PixelRect | null;
   overlayRect: PixelRect | null;
+  distractorRegions?: DistractorRegion[];
 }
 
 export interface DistractionStatus {

@@ -57,9 +57,17 @@ export const ElectrodeCard: React.FC = () => {
     : lastFitResistance ?? undefined;
   const allGood = isStreamActive && quality.t3 && quality.t4 && quality.o1 && quality.o2;
 
-  const effectiveHoldMs = isSimulator ? (allGood ? FIT_HOLD_REQUIRED_MS : 0) : fitHoldMs;
+  const effectiveHoldMs = isSimulator
+    ? allGood
+      ? FIT_HOLD_REQUIRED_MS
+      : 0
+    : isFitCheckMode
+    ? fitHoldMs
+    : allGood
+    ? Math.max(fitHoldMs, FIT_HOLD_REQUIRED_MS)
+    : 0;
   const diagnostic = diagnoseHeadbandFit(
-    isStreamActive && (isSimulator || isFitCheckMode) ? resistance : undefined,
+    isStreamActive ? resistance : undefined,
     quality,
     effectiveHoldMs
   );
