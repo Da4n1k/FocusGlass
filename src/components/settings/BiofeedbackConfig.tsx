@@ -16,10 +16,11 @@ import {
 } from 'lucide-react';
 import { useFocusStore } from '../../stores/useFocusStore';
 import { tauriBridge } from '../../services/tauriBridge';
-import type { OverlayVisualMode, RunningWindowInfo } from '../../services/eegTypes';
+import type { LinuxBlurStatus, OverlayVisualMode, RunningWindowInfo } from '../../services/eegTypes';
 import { DENSE_BLUR_MIN_PX, THRESHOLD_BLUR_ON_DEFICIT } from '../../services/overlayVisualPolicy';
 import { GlassSlider } from '../glass/GlassSlider';
 import { GlassButton } from '../glass/GlassButton';
+import { LinuxBlurStatusPanel } from './LinuxBlurStatusPanel';
 
 const FULLSCREEN_CONCEPTS: ReadonlyArray<{
   id: Exclude<OverlayVisualMode, 'distractors'>;
@@ -60,6 +61,8 @@ export const BiofeedbackConfig: React.FC = () => {
   const [patternDraft, setPatternDraft] = useState(settings.distractorPatterns.join('\n'));
   const [runningWindows, setRunningWindows] = useState<RunningWindowInfo[]>([]);
   const [loadingWindows, setLoadingWindows] = useState(false);
+  const [linuxBlurStatus, setLinuxBlurStatus] = useState<LinuxBlurStatus | null>(null);
+  const nativeLinuxBlur = linuxBlurStatus?.linux === true;
 
   useEffect(() => {
     setPatternDraft(settings.distractorPatterns.join('\n'));
@@ -115,6 +118,7 @@ export const BiofeedbackConfig: React.FC = () => {
 
   return (
     <div className="space-y-4">
+      <LinuxBlurStatusPanel onStatus={setLinuxBlurStatus} />
       {/* Training Mode Selector */}
       <div>
         <label className="text-xs font-semibold text-slate-300 block mb-1.5">
@@ -193,15 +197,17 @@ export const BiofeedbackConfig: React.FC = () => {
                     <div className="flex items-center justify-between gap-1 mb-1">
                       <span className="flex items-center gap-1.5 text-xs font-bold text-white">
                         {concept.icon}
-                        {concept.title}
+                         {nativeLinuxBlur && concept.id === 'threshold_blur' ? 'Блюр по порогу · Wayland' : concept.title}
                       </span>
                     </div>
                     <p className="text-[10px] text-slate-300 leading-relaxed">
-                      {concept.description}
+                       {nativeLinuxBlur && concept.id === 'threshold_blur'
+                         ? 'Полноэкранный сквозной блюр при падении внимания ниже целевого порога. Без дополнительного порога дефицита 45%. Силу эффекта определяет композитор.'
+                         : concept.description}
                     </p>
                   </div>
                   <span className="inline-block self-start text-[9px] px-1.5 py-0.5 rounded bg-black/35 border border-white/10 text-slate-300 font-mono">
-                    {concept.badge}
+                     {nativeLinuxBlur && concept.id === 'threshold_blur' ? 'Нативный Wayland' : concept.badge}
                   </span>
                 </button>
               );
@@ -413,6 +419,21 @@ export const BiofeedbackConfig: React.FC = () => {
           <p className="text-[11px] text-emerald-300/90 p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25">
             Размытие отключено (`0 px`): в базовом режиме «Плавное затемнение» буквы всегда остаются резкими по принципу «не навреди». Для размытия краёв, плотной паузы или окон-отвлекателей выберите соответствующую концепцию выше.
           </p>
+        ) : nativeLinuxBlur && activeMode === 'threshold_blur' ? (
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.blurRadius > 0}
+                onChange={(event) => updateSettings({ blurRadius: event.target.checked ? 16 : 0 })}
+              />
+              Включить нативное размытие
+            </label>
+            <p className="text-[11px] text-slate-400">
+              Wayland-протокол не позволяет приложению задавать радиус. Здесь нет регулятора
+              «силы», который ничего не меняет: доступны включение и выключение эффекта.
+            </p>
+          </div>
         ) : (
           <GlassSlider
             label={

@@ -21,6 +21,7 @@ const testFiles = [
   resolve('tests/tier1_features/windowState.test.ts'),
   resolve('tests/tier1_features/windowSync.test.ts'),
   resolve('tests/tier1_features/overlaySync.test.ts'),
+  resolve('tests/tier1_features/linuxBlurPolicy.test.ts'),
   resolve('tests/tier1_features/overlayVisualPolicy.test.ts'),
   resolve('tests/tier1_features/hudFit.test.ts'),
   resolve('tests/tier1_features/sessionPersistence.test.ts'),
