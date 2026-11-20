@@ -1,6 +1,7 @@
 import { useFocusStore } from '../stores/useFocusStore';
 import { tauriBridge } from './tauriBridge';
 import { StatePublisher, buildSnapshotInput } from './overlaySync';
+import { startLinuxBlurPublisher } from './linuxBlurPublisher';
 
 const TICK_INTERVAL_MS = 50;
 
@@ -10,6 +11,7 @@ const TICK_INTERVAL_MS = 50;
  * публикатор не запускается.
  */
 export function startOverlayPublisher(): () => void {
+  const stopBlur = startLinuxBlurPublisher();
   let stopped = false;
   let cleanupInner: (() => void) | undefined;
 
@@ -46,6 +48,7 @@ export function startOverlayPublisher(): () => void {
   });
 
   return () => {
+    stopBlur();
     stopped = true;
     cleanupInner?.();
   };

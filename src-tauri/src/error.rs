@@ -37,6 +37,9 @@ pub enum AppError {
 
     #[error("BCI error: {0}")]
     Bci(String),
+
+    #[error("Wayland blur error: {0}")]
+    WaylandBlur(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -54,6 +57,7 @@ impl AppError {
             AppError::ClickThroughUnavailable => "click_through_unavailable",
             AppError::UnknownDeviceSource(_) => "unknown_device_source",
             AppError::Bci(_) => "bci",
+            AppError::WaylandBlur(_) => "wayland_blur",
         }
     }
 }

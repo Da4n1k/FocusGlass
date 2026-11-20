@@ -175,6 +175,16 @@ export interface OverlayInfo {
   unifiedHud?: boolean;
 }
 
+export interface LinuxBlurStatus {
+  linux: boolean;
+  enabled: boolean;
+  available: boolean;
+  requested: boolean;
+  active: boolean;
+  mappedOutputs: number;
+  message: string;
+}
+
 export interface SessionStatistics {
   durationSeconds: number;
   timeInFocusSeconds: number;
