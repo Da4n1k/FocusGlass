@@ -197,17 +197,19 @@ export const BiofeedbackConfig: React.FC = () => {
                     <div className="flex items-center justify-between gap-1 mb-1">
                       <span className="flex items-center gap-1.5 text-xs font-bold text-white">
                         {concept.icon}
-                         {nativeLinuxBlur && concept.id === 'threshold_blur' ? 'Блюр по порогу · Wayland' : concept.title}
+                         {nativeLinuxBlur && concept.id === 'threshold_blur' ? 'Блюр по порогу · Linux' : concept.title}
                       </span>
                     </div>
                     <p className="text-[10px] text-slate-300 leading-relaxed">
                        {nativeLinuxBlur && concept.id === 'threshold_blur'
-                         ? 'Полноэкранный сквозной блюр при падении внимания ниже целевого порога. Без дополнительного порога дефицита 45%. Силу эффекта определяет композитор.'
+                         ? linuxBlurStatus?.adjustableRadius
+                           ? 'Сквозной GPU-блюр и волна частиц при падении внимания ниже целевого порога. Нативный бэкенд защищает окно приложения, HUD и панели.'
+                           : 'Сквозной блюр при падении внимания ниже целевого порога. В резервном Wayland-режиме силу задаёт композитор; защита HUD не гарантируется.'
                          : concept.description}
                     </p>
                   </div>
                   <span className="inline-block self-start text-[9px] px-1.5 py-0.5 rounded bg-black/35 border border-white/10 text-slate-300 font-mono">
-                     {nativeLinuxBlur && concept.id === 'threshold_blur' ? 'Нативный Wayland' : concept.badge}
+                     {nativeLinuxBlur && concept.id === 'threshold_blur' ? 'Нативный Linux' : concept.badge}
                   </span>
                 </button>
               );
@@ -421,17 +423,32 @@ export const BiofeedbackConfig: React.FC = () => {
           </p>
         ) : nativeLinuxBlur && activeMode === 'threshold_blur' ? (
           <div className="space-y-2">
-            <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.blurRadius > 0}
-                onChange={(event) => updateSettings({ blurRadius: event.target.checked ? 16 : 0 })}
+            {linuxBlurStatus?.adjustableRadius && (
+              <GlassSlider
+                label="Радиус GPU-размытия"
+                value={settings.blurRadius / 2}
+                min={0}
+                max={16}
+                step={1}
+                unit="px"
+                accentColor="cyan"
+                description="0 — выключено; 4–8 px — заметное размытие; 12–16 px — сильное. Превью использует выбранную силу."
+                onChange={(value) => updateSettings({ blurRadius: value * 2 })}
               />
-              Включить нативное размытие
-            </label>
+            )}
+            {settings.blurRadius === 0 && (
+              <div role="alert" className="rounded-lg border border-amber-400/40 bg-amber-500/10 p-3 text-xs text-amber-200">
+                <p>Радиус 0: размытие по порогу выключено, даже если метрика пересекла порог.</p>
+                <button type="button" className="mt-2 font-semibold underline"
+                  onClick={() => updateSettings({ blurRadius: 16 })}>
+                  Включить заметный блюр · 8 px
+                </button>
+              </div>
+            )}
             <p className="text-[11px] text-slate-400">
-              Wayland-протокол не позволяет приложению задавать радиус. Здесь нет регулятора
-              «силы», который ничего не меняет: доступны включение и выключение эффекта.
+              {linuxBlurStatus?.adjustableRadius
+                ? 'Сцена размывается GPU-шейдером; собственные окна и панели исключаются из эффекта.'
+                : 'Для управления радиусом нужен плагин KWin на Wayland или focusglass-x11 на X11. Резервный Wayland-протокол не задаёт силу размытия.'}
             </p>
           </div>
         ) : (

@@ -3,22 +3,28 @@ import type { BiofeedbackFeedbackState, DeviceStatus, FocusGlassSettings, Overla
 export interface LinuxBlurSource {
   overlayEnabled: boolean;
   isPaused: boolean;
-  settings: Pick<FocusGlassSettings, 'deviceSource' | 'overlayMode' | 'blurRadius'>;
+  settings: Pick<FocusGlassSettings, 'deviceSource' | 'overlayMode' | 'blurRadius' | 'threshold' | 'invertReaction'>;
   deviceStatus: Pick<DeviceStatus, 'connected' | 'streamMode'>;
   feedbackState: BiofeedbackFeedbackState;
 }
 
 export function buildLinuxBlurInput(state: LinuxBlurSource): LinuxBlurInput {
+  const metric = state.feedbackState.smoothedMetric;
+  const threshold = state.feedbackState.effectiveThreshold ?? state.settings.threshold;
+  // Threshold blur is binary, not the proportional dimmer's >0.01 opacity gate.
+  // Respect the calibrated display scale and inversion, including tiny crossings.
+  const crossed = Number.isFinite(metric) && Number.isFinite(threshold) &&
+    (state.settings.invertReaction ? metric > threshold : metric < threshold);
   return {
     enabled: state.overlayEnabled,
     streamActive: state.settings.deviceSource === 'simulator' ||
       (state.deviceStatus.connected && state.deviceStatus.streamMode !== 'resist'),
     contactOk: state.feedbackState.isContactOk,
     paused: state.isPaused,
-    isDimmingActive: state.feedbackState.isDimmingActive,
+    isDimmingActive: crossed,
     visualStyle: state.settings.overlayMode,
-    // Binary compositor effect: no legacy pause-card/45%-deficit gate here.
-    opacity: state.feedbackState.overlayOpacity,
+    // Strength comes from the blur radius, not from dimmingMaxOpacity.
+    opacity: crossed ? 0.95 : 0,
     blurPx: state.settings.blurRadius,
   };
 }

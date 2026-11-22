@@ -48,3 +48,5 @@ src-tauri/vendor/*.dll
 src-tauri/vendor/*.so
 src-tauri/vendor/*.dylib
 src-tauri/vendor/*.lib
+native/build/
+native/stage/

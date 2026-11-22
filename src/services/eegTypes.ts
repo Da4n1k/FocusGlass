@@ -182,6 +182,11 @@ export interface LinuxBlurStatus {
   requested: boolean;
   active: boolean;
   mappedOutputs: number;
+  backend: string;
+  adjustableRadius: boolean;
+  cursorInteraction: boolean;
+  protectedWindows: number;
+  frames: number;
   message: string;
 }
 

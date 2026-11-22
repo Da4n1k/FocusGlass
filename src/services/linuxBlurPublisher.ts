@@ -2,18 +2,30 @@ import { useFocusStore } from '../stores/useFocusStore';
 import { buildLinuxBlurInput, linuxBlurTarget } from './linuxBlurPolicy';
 import { tauriBridge } from './tauriBridge';
 
-/** Independent of existing Linux dim windows: native blur failure cannot change their behavior. */
-export function startLinuxBlurPublisher(): () => void {
+/** Owns native heartbeats; tells the legacy publisher when GPU feedback takes over. */
+export function startLinuxBlurPublisher(onNativeAvailable?: (available: boolean) => void): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setInterval> | undefined;
   let inFlight = false;
+  let statusInFlight = false;
+  let lastStatusAt = Number.NEGATIVE_INFINITY;
 
   const publish = (): void => {
     if (stopped || inFlight) return;
     const state = useFocusStore.getState();
+    if (!statusInFlight && performance.now() - lastStatusAt > 1000) {
+      statusInFlight = true;
+      lastStatusAt = performance.now();
+      void tauriBridge.getLinuxBlurStatus().then((native) => {
+        if (!stopped) onNativeAvailable?.(native.available && native.adjustableRadius);
+      }).catch((error: unknown) => {
+        if (!stopped) onNativeAvailable?.(false);
+        console.warn('[FocusGlass] Native effect status:', error);
+      }).finally(() => { statusInFlight = false; });
+    }
     const target = linuxBlurTarget(buildLinuxBlurInput(state));
     inFlight = true;
-    void tauriBridge.updateLinuxBlur(target).catch((error: unknown) => {
+    void tauriBridge.updateLinuxBlur({ ...target, frozen: state.feedbackState.isArtifactFrozen }).catch((error: unknown) => {
       // Stop heartbeats: the native watchdog clears any remaining blur.
       if (timer !== undefined) clearInterval(timer);
       console.warn('[FocusGlass] Wayland blur publisher stopped:', error);

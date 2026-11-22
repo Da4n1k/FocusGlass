@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { buildLinuxBlurInput, linuxBlurTarget, type LinuxBlurInput } from '../../src/services/linuxBlurPolicy.ts';
 import { BiofeedbackEngine } from '../../src/services/biofeedbackEngine.ts';
 import { resolveOverlayVisuals } from '../../src/services/overlayVisualPolicy.ts';
+import { buildSnapshotInput } from '../../src/services/overlaySync.ts';
 
 const active: LinuxBlurInput = {
   enabled: true,
@@ -15,6 +16,23 @@ const active: LinuxBlurInput = {
   blurPx: 20,
 };
 const clear = { opacity: 0, blurPx: 0 };
+
+test('native takeover clears only legacy visuals and restores them on backend failure', () => {
+  const engine = new BiofeedbackEngine();
+  const feedback = { ...engine.getLastState(), overlayOpacity: 0.5, blurRadius: 16,
+    isDimmingActive: true, audioVolume: 0.3 };
+  const state = { settings: engine.getSettings(), feedbackState: feedback,
+    deviceStatus: { connected: true }, telemetry: null, isPaused: false,
+    activePreset: 'distracted' as const };
+  const native = buildSnapshotInput(state, true);
+  assert.equal(native.feedback.overlayOpacity, 0);
+  assert.equal(native.feedback.blurRadius, 0);
+  assert.equal(native.feedback.audioVolume, 0.3);
+  assert.equal(state.feedbackState.overlayOpacity, 0.5, 'must not mutate the live engine');
+  const fallback = buildSnapshotInput(state, false);
+  assert.equal(fallback.feedback.overlayOpacity, 0.5);
+  assert.equal(fallback.feedback.blurRadius, 16);
+});
 
 test('native blur follows the engine threshold without a 45% deficit gate', () => {
   assert.deepEqual(linuxBlurTarget(active), { opacity: 0.7, blurPx: 20 });
@@ -57,11 +75,49 @@ test('fit-check resistance mode is not treated as a live EEG stream', () => {
   const feedbackState = new BiofeedbackEngine().getLastState();
   const input = buildLinuxBlurInput({
     overlayEnabled: true, isPaused: false,
-    settings: { deviceSource: 'bluetooth', overlayMode: 'threshold_blur', blurRadius: 16 },
+    settings: { deviceSource: 'bluetooth', overlayMode: 'threshold_blur', blurRadius: 16, threshold: 60, invertReaction: false },
     deviceStatus: { connected: true, streamMode: 'resist' },
     feedbackState: { ...feedbackState, isDimmingActive: true, overlayOpacity: 0.5 },
   });
   assert.deepEqual(linuxBlurTarget(input), clear);
+});
+
+test('native threshold blur activates immediately across either threshold direction, not the dimmer dead zone', () => {
+  for (const invertReaction of [false,true]) {
+    const engine = new BiofeedbackEngine({
+      threshold: 60, sensitivitySeconds: 0.001, overlayMode: 'threshold_blur',
+      invertReaction, dimmingMaxOpacity: 0.05,
+    });
+    const metric = invertReaction ? 60.1 : 59.9;
+    const packet = {
+      timestamp: 0, rawChannels: { t3: 10, t4: 10, o1: 10, o2: 10 },
+      concentration: metric, relaxation: 40,
+      signalQuality: { t3: true, t4: true, o1: true, o2: true }, isArtifact: false,
+    };
+    const feedbackState = engine.processTelemetry(packet);
+    assert.equal(feedbackState.isDimmingActive,false,'fixture must exercise the old hidden opacity gate');
+    const state = {
+      overlayEnabled: true,isPaused: false,settings: engine.getSettings(),
+      deviceStatus: { connected: true },feedbackState,
+    };
+    assert.deepEqual(linuxBlurTarget(buildLinuxBlurInput(state)),{opacity:0.95,blurPx:16});
+    const equal = engine.processTelemetry({...packet,timestamp:4,concentration:60});
+    assert.deepEqual(linuxBlurTarget(buildLinuxBlurInput({...state,feedbackState:equal})),clear);
+  }
+});
+
+test('native threshold uses the calibrated effective threshold, and zero strength stays explicitly disabled', () => {
+  const engine = new BiofeedbackEngine({threshold:80,overlayMode:'threshold_blur'});
+  const state = {
+    overlayEnabled:true,isPaused:false,settings:engine.getSettings(),
+    deviceStatus:{connected:true},
+    feedbackState:{...engine.getLastState(),smoothedMetric:55,effectiveThreshold:50},
+  };
+  assert.deepEqual(linuxBlurTarget(buildLinuxBlurInput(state)),clear);
+  state.feedbackState.smoothedMetric=45;
+  assert.equal(linuxBlurTarget(buildLinuxBlurInput(state)).opacity,0.95);
+  const disabled = linuxBlurTarget(buildLinuxBlurInput({...state,settings:{...state.settings,blurRadius:0}}));
+  assert.equal(disabled.blurPx,0);
 });
 test('existing dimming, sharp-center vignette and distractor modes are not replaced', () => {
   for (const visualStyle of ['fullscreen_dim', 'vignette_blur', 'distractors'] as const) {

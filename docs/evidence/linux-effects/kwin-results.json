@@ -1,0 +1,25 @@
+{
+  "active": true,
+  "amount": 0.4863381387763538,
+  "backend": "kwin-gpu",
+  "cursorInteraction": true,
+  "diagnostics": {
+    "copiedEdgeEnergy": 282868,
+    "glError": 0,
+    "originalEdgeEnergy": 282867,
+    "originalLight": 3773016,
+    "protectedChanged": 0,
+    "protectedSamples": 5670,
+    "resultEdgeEnergy": 205352,
+    "resultLight": 3919183,
+    "unprotectedChanged": 46226
+  },
+  "elapsed": 3.848,
+  "error": "",
+  "frames": 50,
+  "ok": true,
+  "particles": true,
+  "protectedWindows": 1,
+  "radius": 4,
+  "previewCleared": true
+}

@@ -1,0 +1,15 @@
+{
+  "backend": "x11-xcomposite-gpu",
+  "frames": 41,
+  "window_manager": "none (Xvfb + picom)",
+  "managed_fixtures": null,
+  "protected_windows": 2,
+  "blurred_samples_changed": 1536,
+  "own_window_changed": 0,
+  "panel_changed": 0,
+  "click_through": true,
+  "keyboard_through": true,
+  "preview_cleared": true,
+  "threshold_visible_within_seconds": 0.442,
+  "scene_restored": true
+}

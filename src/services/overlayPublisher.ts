@@ -11,7 +11,8 @@ const TICK_INTERVAL_MS = 50;
  * публикатор не запускается.
  */
 export function startOverlayPublisher(): () => void {
-  const stopBlur = startLinuxBlurPublisher();
+  let nativeAvailable = false;
+  const stopBlur = startLinuxBlurPublisher((available) => { nativeAvailable = available; });
   let stopped = false;
   let cleanupInner: (() => void) | undefined;
 
@@ -21,7 +22,12 @@ export function startOverlayPublisher(): () => void {
     }
 
     const publisher = new StatePublisher({
-      read: () => buildSnapshotInput(useFocusStore.getState()),
+      read: () => {
+        const state = useFocusStore.getState();
+        // Hide legacy fullscreen surfaces through the normal visibility state
+        // machine. If native rendering fails, the next snapshot restores them.
+        return buildSnapshotInput(state, nativeAvailable && state.settings.overlayMode === 'threshold_blur');
+      },
       emit: (snapshot) => {
         void tauriBridge.emitSnapshot(snapshot);
       },

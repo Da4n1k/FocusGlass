@@ -429,6 +429,11 @@ pub struct LinuxBlurStatus {
     pub requested: bool,
     pub active: bool,
     pub mapped_outputs: usize,
+    pub backend: String,
+    pub adjustable_radius: bool,
+    pub cursor_interaction: bool,
+    pub protected_windows: usize,
+    pub frames: u64,
     pub message: String,
 }
 
@@ -448,34 +453,44 @@ pub fn get_linux_blur_status(app: AppHandle) -> AppResult<LinuxBlurStatus> {
             requested: false,
             active: false,
             mapped_outputs: 0,
+            backend: "none".into(),
+            adjustable_radius: false,
+            cursor_interaction: false,
+            protected_windows: 0,
+            frames: 0,
             message: "Native Wayland blur is Linux-only".into(),
         })
     }
 }
 
 #[tauri::command]
-pub fn preview_linux_blur(app: AppHandle) -> AppResult<()> {
+pub fn preview_linux_blur(app: AppHandle, blur_px: Option<f64>) -> AppResult<()> {
     #[cfg(target_os = "linux")]
     {
-        app.state::<crate::linux_blur::LinuxBlur>().preview()
+        app.state::<crate::linux_blur::LinuxBlur>().preview_with_radius(blur_px)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = app;
+        let _ = (app, blur_px);
         Err(AppError::InvalidArgument("Wayland blur is Linux-only".into()))
     }
 }
 
 #[tauri::command]
-pub fn update_linux_blur(app: AppHandle, opacity: f64, blur_px: f64) -> AppResult<()> {
+pub fn update_linux_blur(
+    app: AppHandle,
+    opacity: f64,
+    blur_px: f64,
+    frozen: Option<bool>,
+) -> AppResult<()> {
     #[cfg(target_os = "linux")]
     {
         app.state::<crate::linux_blur::LinuxBlur>()
-            .update(opacity, blur_px)
+            .update_frame(opacity, blur_px, frozen.unwrap_or(false))
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (app, opacity, blur_px);
+        let _ = (app, opacity, blur_px, frozen);
         Ok(())
     }
 }
