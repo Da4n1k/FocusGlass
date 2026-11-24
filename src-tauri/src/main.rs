@@ -5,6 +5,8 @@ mod bci;
 mod commands;
 mod distraction;
 mod error;
+#[cfg(target_os = "linux")]
+mod linux_blur;
 mod overlay;
 mod screen_blur;
 mod storage;
@@ -34,6 +36,10 @@ static QUIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 pub fn request_quit(app: &AppHandle) {
     if QUIT_IN_PROGRESS.swap(true, Ordering::SeqCst) {
         return;
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(blur) = app.try_state::<linux_blur::LinuxBlur>() {
+        let _ = blur.stop();
     }
     if let Some(blur_svc) = app.try_state::<Arc<screen_blur::ScreenBlurService>>() {
         blur_svc.set_active(false, None);
@@ -86,6 +92,8 @@ fn restore_control(app: &AppHandle) {
 }
 
 fn setup(app: &AppHandle, restore_shortcut: Shortcut) -> AppResult<()> {
+    #[cfg(target_os = "linux")]
+    app.manage(linux_blur::LinuxBlur::start());
     let app_data_dir = app.path().app_data_dir()?;
     let resource_dir = app.path().resource_dir().ok();
     let dumps_dir = app
@@ -237,6 +245,9 @@ fn main() {
             commands::show_dashboard,
             commands::update_overlay,
             commands::get_overlay_frame,
+            commands::get_linux_blur_status,
+            commands::update_linux_blur,
+            commands::preview_linux_blur,
             commands::set_overlay_hit_region,
             commands::set_overlay_mode,
             commands::fit_hud_window,

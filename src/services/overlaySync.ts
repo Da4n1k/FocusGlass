@@ -23,10 +23,14 @@ export interface PublisherState {
   activePreset: PresetState;
 }
 
-export function buildSnapshotInput(state: PublisherState): SnapshotInput {
+export function buildSnapshotInput(state: PublisherState, suppressVisuals = false): SnapshotInput {
   const { settings } = state;
   return {
-    feedback: state.feedbackState,
+    // Native GPU feedback replaces only the legacy visual surface, never EEG,
+    // audio or session metrics. A failed native backend immediately restores it.
+    feedback: suppressVisuals
+      ? { ...state.feedbackState, overlayOpacity: 0, blurRadius: 0, isDimmingActive: false }
+      : state.feedbackState,
     mode: settings.mode,
     deviceSource: settings.deviceSource,
     threshold: settings.threshold,

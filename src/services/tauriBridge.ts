@@ -11,6 +11,7 @@ import type {
   HudAction,
   OverlayFrame,
   OverlayInfo,
+  LinuxBlurStatus,
   PixelRect,
   RawBrainBitPacket,
   RunningWindowInfo,
@@ -120,6 +121,24 @@ class TauriBridge {
   }
 
   // --- Окна и оверлей -------------------------------------------------------
+
+  public async getLinuxBlurStatus(): Promise<LinuxBlurStatus> {
+    if (!this.isTauri()) return {
+      linux: false, enabled: false, available: false, requested: false,
+      active: false, mappedOutputs: 0, message: 'Browser mode',
+      backend: 'none', adjustableRadius: false, cursorInteraction: false, protectedWindows: 0, frames: 0,
+    };
+    return this.invoke('get_linux_blur_status');
+  }
+
+  public async previewLinuxBlur(blurPx?: number): Promise<void> {
+    if (!this.isTauri()) throw new BridgeError('unsupported', 'Размытие рабочего стола недоступно в браузере');
+    await this.invoke('preview_linux_blur', { blurPx });
+  }
+
+  public async updateLinuxBlur(target: { opacity: number; blurPx: number; frozen?: boolean }): Promise<void> {
+    if (this.isTauri()) await this.invoke('update_linux_blur', target);
+  }
 
   /**
    * Возвращает фактически применённое состояние или `null` при сбое IPC,

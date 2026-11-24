@@ -420,6 +420,81 @@ pub fn update_overlay(app: AppHandle, frame: OverlayFrame) -> AppResult<()> {
     overlay::publish_frame(&app, frame)
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinuxBlurStatus {
+    pub linux: bool,
+    pub enabled: bool,
+    pub available: bool,
+    pub requested: bool,
+    pub active: bool,
+    pub mapped_outputs: usize,
+    pub backend: String,
+    pub adjustable_radius: bool,
+    pub cursor_interaction: bool,
+    pub protected_windows: usize,
+    pub frames: u64,
+    pub message: String,
+}
+
+#[tauri::command]
+pub fn get_linux_blur_status(app: AppHandle) -> AppResult<LinuxBlurStatus> {
+    #[cfg(target_os = "linux")]
+    {
+        app.state::<crate::linux_blur::LinuxBlur>().status()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app;
+        Ok(LinuxBlurStatus {
+            linux: false,
+            enabled: false,
+            available: false,
+            requested: false,
+            active: false,
+            mapped_outputs: 0,
+            backend: "none".into(),
+            adjustable_radius: false,
+            cursor_interaction: false,
+            protected_windows: 0,
+            frames: 0,
+            message: "Native Wayland blur is Linux-only".into(),
+        })
+    }
+}
+
+#[tauri::command]
+pub fn preview_linux_blur(app: AppHandle, blur_px: Option<f64>) -> AppResult<()> {
+    #[cfg(target_os = "linux")]
+    {
+        app.state::<crate::linux_blur::LinuxBlur>().preview_with_radius(blur_px)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, blur_px);
+        Err(AppError::InvalidArgument("Wayland blur is Linux-only".into()))
+    }
+}
+
+#[tauri::command]
+pub fn update_linux_blur(
+    app: AppHandle,
+    opacity: f64,
+    blur_px: f64,
+    frozen: Option<bool>,
+) -> AppResult<()> {
+    #[cfg(target_os = "linux")]
+    {
+        app.state::<crate::linux_blur::LinuxBlur>()
+            .update_frame(opacity, blur_px, frozen.unwrap_or(false))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, opacity, blur_px, frozen);
+        Ok(())
+    }
+}
+
 #[tauri::command]
 pub fn get_overlay_frame(state: State<'_, OverlayController>) -> AppResult<Option<OverlayFrame>> {
     state.with(|s| s.last_frame.clone())

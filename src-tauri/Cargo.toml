@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "FocusGlass Biofeedback Ambient Overlay"
 authors = ["FocusGlass Team"]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.86"
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
@@ -22,6 +22,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 # Already pulled in by tauri/wry; used directly to ask GDK whether the screen is composited.
 gtk = "0.18"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

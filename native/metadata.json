@@ -1,0 +1,12 @@
+{
+  "KPlugin": {
+    "Name": "FocusGlass",
+    "Description": "Controlled GPU biofeedback blur with a particle wave; excludes FocusGlass and panels",
+    "License": "GPL-2.0-or-later",
+    "EnabledByDefault": false,
+    "Category": "Accessibility"
+  },
+  "org.kde.kwin.effect": {
+    "enabledByDefaultMethod": false
+  }
+}
