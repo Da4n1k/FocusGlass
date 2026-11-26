@@ -49,3 +49,9 @@ Tauri автоматически подхватывает `src-tauri/tauri.windo
 использует отдельный платформенный конфиг, см. [LINUX_BUILD.md](LINUX_BUILD.md).
 
 Первая сборка Rust идёт около 5 минут (проверено 30.10: 4 мин на компиляцию + установщик NSIS 2,7 МБ), повторные — быстрее (кеш в `src-tauri\target`).
+
+Требуется Rust не ниже 1.85 (`edition = "2024"`).
+
+На машине без Visual Studio Build Tools можно собирать GNU-тулчейном: `rustup toolchain install stable-x86_64-pc-windows-gnu`, затем перед сборкой `$env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"`. Перед первым запуском `npm.cmd run desktop:build` вручную на чистом клоне выполните `powershell -ExecutionPolicy Bypass -File scripts\fetch-neurosdk2.ps1`, чтобы в `src-tauri\vendor\neurosdk2-x64.dll` скачалась библиотека NeuroSDK2 для бандлинга. Собирать именно через `npm.cmd run desktop:build` (`npx.cmd tauri build`): обычный `cargo build --release` даёт dev-бинарник, который ищет `localhost:5173`.
+
+На Windows после `npm.cmd run desktop:build` и `npm.cmd run desktop:build:binary` автоматически срабатывает [`scripts/sync-build-artifacts.mjs`](../scripts/sync-build-artifacts.mjs) (`postdesktop:build` / `postdesktop:build:binary`), копирующий `FocusGlass.exe`, `neurosdk2-x64.dll`, `WebView2Loader.dll` и `FocusGlass_<версия>_x64-setup.exe` в `..\FocusGlass-build` (путь можно переопределить через `FOCUSGLASS_BUILD_OUT_DIR`, а автосинхронизацию отключить флагом `FOCUSGLASS_SKIP_ARTIFACT_SYNC=1`; при `CI=true` без `FOCUSGLASS_BUILD_OUT_DIR` скрипт не выполняется). Ручная синхронизация уже собранных артефактов — `npm.cmd run desktop:sync-artifacts`.

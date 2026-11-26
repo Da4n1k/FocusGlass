@@ -1,6 +1,7 @@
 import React from 'react';
 import { useFocusStore } from '../../stores/useFocusStore';
 
+export { DimLayer, type DimLayerProps, type DimRegionTarget } from './DimLayer';
 const CoffeeYellowIcon: React.FC<{ className?: string }> = ({ className = 'w-6 h-6' }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none">
     <path

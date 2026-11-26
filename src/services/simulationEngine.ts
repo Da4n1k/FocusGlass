@@ -7,6 +7,8 @@ import type {
   ElectrodeSignalQuality,
   ChannelResistanceKOhm,
   RawBrainBitPacket,
+  CalibrationResult,
+  BrainBitResistUpdate,
 } from './eegTypes';
 import { BiofeedbackEngine, DEFAULT_SETTINGS } from './biofeedbackEngine';
 import { EEGSignalProcessor } from './eegSignalProcessor';
@@ -22,6 +24,7 @@ export class SimulationEngine {
   private timerId: ReturnType<typeof setInterval> | null = null;
   private isPaused: boolean = false;
   private currentPreset: PresetState = 'calm_flow';
+  private recordingPlaybackActive: boolean = false;
 
   // Multi-frame physiological artifact burst (~240 ms = 60 samples at 250 Hz)
   private artifactRemainingFrames: number = 0;
@@ -46,6 +49,7 @@ export class SimulationEngine {
   private latestTelemetry: EEGTelemetry | null = null;
 
   private subscribers: Set<TelemetrySubscriber> = new Set();
+  private simulatorSampleListener: ((samples: EEGTelemetry[]) => void) | null = null;
   private rawBatchBuffer: EEGTelemetry[] = [];
 
   constructor() {
@@ -64,7 +68,7 @@ export class SimulationEngine {
         return;
       }
 
-      if (this.settings.deviceSource !== 'simulator') return;
+      if (this.settings.deviceSource !== 'simulator' || this.recordingPlaybackActive) return;
 
       switch (e.key) {
         case '1':
@@ -95,6 +99,10 @@ export class SimulationEngine {
     return () => this.subscribers.delete(callback);
   }
 
+  public setSimulatorSampleListener(listener: ((samples: EEGTelemetry[]) => void) | null): void {
+    this.simulatorSampleListener = listener;
+  }
+
   public start(initialSettings?: Partial<FocusGlassSettings>) {
     if (initialSettings) {
       this.updateSettings(initialSettings);
@@ -102,11 +110,30 @@ export class SimulationEngine {
     if (this.timerId !== null) return;
 
     const intervalMs = 16;
-    const samplesPerTick = Math.round((this.sampleRateHz * intervalMs) / 1000); // 4 samples
+    // Do not catch up more than 2 seconds of signal per tick (system sleep / frozen tab).
+    const maxCatchUpSamples = this.sampleRateHz * 2;
+    let lastTickAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    let sampleDebt = 0;
 
     this.timerId = globalThis.setInterval(() => {
-      if (this.isPaused || this.settings.deviceSource !== 'simulator') return;
-      this.stepSamples(samplesPerTick);
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const elapsedMs = Math.max(0, now - lastTickAt);
+      lastTickAt = now;
+
+      if (this.isPaused || this.settings.deviceSource !== 'simulator') {
+        sampleDebt = 0;
+        return;
+      }
+
+      // Compensate WebView timer throttling when the dashboard window is hidden in the tray.
+      sampleDebt = Math.min(
+        maxCatchUpSamples,
+        sampleDebt + (elapsedMs * this.sampleRateHz) / 1000
+      );
+      const due = Math.floor(sampleDebt);
+      if (due <= 0) return;
+      sampleDebt -= due;
+      this.stepSamples(due);
     }, intervalMs);
   }
 
@@ -120,12 +147,18 @@ export class SimulationEngine {
   public stepSamples(sampleCount: number = 4): BiofeedbackFeedbackState {
     let latestState = this.biofeedback.getLastState();
     const count = Math.max(1, sampleCount);
+    const stepBatch: EEGTelemetry[] | null = this.simulatorSampleListener ? [] : null;
 
     for (let i = 0; i < count; i++) {
       const telemetry = this.generateSample();
       latestState = this.biofeedback.processTelemetry(telemetry);
       this.latestTelemetry = telemetry;
       this.rawBatchBuffer.push(telemetry);
+      stepBatch?.push(telemetry);
+    }
+
+    if (stepBatch && stepBatch.length > 0 && this.simulatorSampleListener) {
+      this.simulatorSampleListener(stepBatch);
     }
 
     if (this.rawBatchBuffer.length > 1000) {
@@ -149,7 +182,11 @@ export class SimulationEngine {
         telemetry.rawChannels,
         telemetry.signalQuality
       );
-      enriched = { ...telemetry, spectrum: snap.spectrum };
+      enriched = {
+        ...telemetry,
+        spectrum: snap.spectrum,
+        isArtifact: telemetry.isArtifact || snap.bothSidesArtifacted,
+      };
     }
 
     const state = this.biofeedback.processTelemetry(enriched);
@@ -177,6 +214,103 @@ export class SimulationEngine {
       resistanceKOhm: packet.resistanceKOhm,
     });
     return this.ingestExternalTelemetry(frame);
+  }
+
+  /**
+   * Processes a batched slice of live 250 Hz BrainBit packets, computing DSP and
+   * biofeedback on every sample while notifying UI subscribers once per batch (~50 Hz).
+   */
+  public ingestRawBrainBitBatch(packets: RawBrainBitPacket[]): BiofeedbackFeedbackState {
+    if (packets.length === 0) {
+      return this.biofeedback.getLastState();
+    }
+    let latestState = this.biofeedback.getLastState();
+    for (const packet of packets) {
+      const quality = packet.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
+      const telemetry = this.signalProcessor.toTelemetryFrame({
+        timestamp: packet.timestamp ?? Date.now(),
+        rawChannels: packet.rawChannels,
+        signalQuality: quality,
+        resistanceKOhm: packet.resistanceKOhm,
+      });
+      latestState = this.biofeedback.processTelemetry(telemetry);
+      this.latestTelemetry = telemetry;
+      this.rawBatchBuffer.push(telemetry);
+    }
+    if (this.rawBatchBuffer.length > 1000) {
+      this.rawBatchBuffer = this.rawBatchBuffer.slice(-1000);
+    }
+    if (this.latestTelemetry) {
+      this.notify(this.latestTelemetry, latestState, this.biofeedback.getSessionStats());
+    }
+    return latestState;
+  }
+
+  /**
+   * Publishes live Fit Check impedance updates (`CommandStartResist`) to UI subscribers
+   * while keeping dimming and audio biofeedback safely suspended.
+   */
+  public applyBrainBitResistUpdate(update: BrainBitResistUpdate): void {
+    const allOk =
+      update.signalQuality.t3 &&
+      update.signalQuality.t4 &&
+      update.signalQuality.o1 &&
+      update.signalQuality.o2;
+
+    const prev = this.latestTelemetry;
+    const telemetry: EEGTelemetry = {
+      timestamp: update.timestamp,
+      rawChannels: prev?.rawChannels ?? { t3: 0, t4: 0, o1: 0, o2: 0 },
+      concentration: prev?.concentration ?? 0,
+      relaxation: prev?.relaxation ?? 0,
+      signalQuality: update.signalQuality,
+      resistanceKOhm: update.resistanceKOhm,
+      spectrum: prev?.spectrum,
+      isArtifact: false,
+    };
+
+    const safeState: BiofeedbackFeedbackState = {
+      ...this.biofeedback.getLastState(),
+      deficit: 0,
+      overlayOpacity: 0,
+      blurRadius: 0,
+      audioVolume: 0,
+      isDimmingActive: false,
+      isContactOk: allOk,
+      isArtifactFrozen: false,
+    };
+
+    this.latestTelemetry = telemetry;
+    this.notify(telemetry, safeState, this.biofeedback.getSessionStats());
+  }
+
+  /** Process every recorded sample while publishing only the newest frame per UI batch. */
+  public ingestRecordedFrames(
+    packets: Array<RawBrainBitPacket & { isArtifact?: boolean }>
+  ): BiofeedbackFeedbackState {
+    let latestState = this.biofeedback.getLastState();
+    for (const packet of packets) {
+      const quality = packet.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
+      const processed = this.signalProcessor.toTelemetryFrame({
+        timestamp: packet.timestamp ?? Date.now(),
+        rawChannels: packet.rawChannels,
+        signalQuality: quality,
+        resistanceKOhm: packet.resistanceKOhm,
+      });
+      const telemetry = packet.isArtifact
+        ? { ...processed, isArtifact: true }
+        : processed;
+      latestState = this.biofeedback.processTelemetry(telemetry);
+      this.latestTelemetry = telemetry;
+      this.rawBatchBuffer.push(telemetry);
+    }
+    if (this.rawBatchBuffer.length > 1000) {
+      this.rawBatchBuffer = this.rawBatchBuffer.slice(-1000);
+    }
+    if (this.latestTelemetry) {
+      this.notify(this.latestTelemetry, latestState, this.biofeedback.getSessionStats());
+    }
+    return latestState;
   }
 
   public updateSettings(newSettings: Partial<FocusGlassSettings>): void {
@@ -259,12 +393,30 @@ export class SimulationEngine {
     this.signalQuality[channel] = isOk;
   }
 
+  public getElectrodeQuality(): ElectrodeSignalQuality {
+    return { ...this.signalQuality };
+  }
+
   public getRawBuffer(): EEGTelemetry[] {
     return this.rawBatchBuffer;
   }
 
   public getSessionStats(): SessionStatistics {
     return this.biofeedback.getSessionStats();
+  }
+
+  public setPersonalCalibration(calibration: CalibrationResult | null): void {
+    this.biofeedback.setPersonalCalibration(calibration);
+  }
+
+  public setRecordingPlaybackActive(active: boolean): void {
+    this.recordingPlaybackActive = active;
+  }
+
+  public resetRecordedSignalPipeline(): void {
+    this.signalProcessor.reset();
+    this.biofeedback.clearSmoothingWindow();
+    this.rawBatchBuffer = [];
   }
 
   public getSettings(): FocusGlassSettings {

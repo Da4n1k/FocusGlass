@@ -1,10 +1,12 @@
 import React from 'react';
-import {
-  Play,
-} from 'lucide-react';
+import { Play } from 'lucide-react';
 import { useFocusStore } from '../../stores/useFocusStore';
+import { useFitHudWindow } from './useFitHudWindow';
 import brainbitIcon from '../../assets/brainbit-icon.png';
 
+export { FocusBarHUDView, type FocusBarHUDViewProps } from './FocusBarHUDView';
+
+/** Плавающий HUD («шкала-столбик») в дизайне FocusGlass 2.0. */
 export const FocusBarHUD: React.FC = () => {
   const {
     feedbackState,
@@ -17,13 +19,16 @@ export const FocusBarHUD: React.FC = () => {
     togglePause,
   } = useFocusStore();
 
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  useFitHudWindow(rootRef);
+
   const isConcentration = settings.mode === 'concentration';
   const isSimulator = settings.deviceSource === 'simulator';
   const isStreamActive = isSimulator || deviceStatus.connected;
   const hasSignalData = isSimulator || deviceStatus.connected || sessionStats.durationSeconds > 0;
 
   const currentMetric = hasSignalData ? Math.round(feedbackState.smoothedMetric) : 0;
-  const threshold = settings.threshold;
+  const threshold = Math.round(feedbackState.effectiveThreshold ?? settings.threshold);
   const isBelowThreshold = isStreamActive && feedbackState.isContactOk && currentMetric < threshold;
 
   const quality = telemetry?.signalQuality ?? {
@@ -43,7 +48,7 @@ export const FocusBarHUD: React.FC = () => {
   };
 
   return (
-    <div className="fixed top-7 right-7 z-50 select-none animate-in fade-in duration-200">
+    <div ref={rootRef} className="fixed top-7 right-7 z-50 select-none animate-in fade-in duration-200">
       <div
         className="w-[320px] h-[165px] p-[14px_16px] rounded-[20px] bg-[#131A2A]/[0.96] backdrop-blur-2xl border border-white/[0.12] shadow-[0_20px_50px_rgba(0,0,0,0.5)] text-[#EEF1F8] flex flex-col justify-between"
         data-tauri-drag-region

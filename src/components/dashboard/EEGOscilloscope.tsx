@@ -15,8 +15,8 @@ const CHANNELS = [
 export const EEGOscilloscope: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [timeScale, setTimeScale] = useState<number>(2);
+  const [uvRange, setUvRange] = useState<number>(150);
   const { settings, deviceStatus, isPaused, telemetry } = useFocusStore();
-  const gain = 1.5;
 
   const isSimulator = settings.deviceSource === 'simulator';
   const isStreamActive = isSimulator || deviceStatus.connected;
@@ -64,9 +64,17 @@ export const EEGOscilloscope: React.FC = () => {
 
       if (slice.length > 1) {
         const channelHeight = height / 4;
+        const halfLane = channelHeight / 2 - 6;
 
         CHANNELS.forEach((ch, index) => {
-          const centerY = channelHeight * index + channelHeight / 2;
+          const laneTop = channelHeight * index;
+          const centerY = laneTop + channelHeight / 2;
+
+          let dcSum = 0;
+          for (let i = 0; i < slice.length; i++) {
+            dcSum += slice[i].rawChannels[ch.key];
+          }
+          const dcMean = dcSum / slice.length;
 
           ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
           ctx.setLineDash([2, 4]);
@@ -83,10 +91,14 @@ export const EEGOscilloscope: React.FC = () => {
           ctx.beginPath();
 
           const dx = width / (slice.length - 1);
+          const toLaneY = (rawUv: number): number => {
+            const acUv = rawUv - dcMean;
+            const norm = Math.max(-1, Math.min(1, acUv / uvRange));
+            return centerY - norm * halfLane;
+          };
 
           for (let i = 0; i < slice.length; i++) {
-            const rawVal = slice[i].rawChannels[ch.key];
-            const y = centerY - rawVal * gain * 0.4;
+            const y = toLaneY(slice[i].rawChannels[ch.key]);
             const x = i * dx;
 
             if (i === 0) {
@@ -99,24 +111,26 @@ export const EEGOscilloscope: React.FC = () => {
           ctx.shadowBlur = 0;
 
           const lastPoint = slice[slice.length - 1];
-          const lastY = centerY - lastPoint.rawChannels[ch.key] * gain * 0.4;
+          const lastRawUv = lastPoint.rawChannels[ch.key];
+          const lastAcUv = lastRawUv - dcMean;
+          const lastY = toLaneY(lastRawUv);
           ctx.fillStyle = ch.color;
           ctx.beginPath();
           ctx.arc(width - 2, lastY, 3, 0, Math.PI * 2);
           ctx.fill();
 
-          ctx.fillStyle = 'rgba(241, 245, 249, 0.7)';
+          ctx.fillStyle = 'rgba(241, 245, 249, 0.75)';
           ctx.font = '10px "JetBrains Mono", monospace';
-          ctx.fillText(ch.label, 8, centerY - channelHeight / 2 + 14);
+          ctx.fillText(ch.label, 8, laneTop + 14);
 
-          const liveUv = lastPoint.rawChannels[ch.key];
+          const hasLargeDc = Math.abs(dcMean) >= 500;
+          const readout = hasLargeDc
+            ? `${lastAcUv >= 0 ? '+' : ''}${lastAcUv.toFixed(1)} µV  (DC ${dcMean >= 0 ? '+' : ''}${(dcMean / 1000).toFixed(1)} mV)`
+            : `${lastAcUv >= 0 ? '+' : ''}${lastAcUv.toFixed(1)} µV`;
           ctx.fillStyle = ch.color;
           ctx.font = '11px "JetBrains Mono", monospace';
-          ctx.fillText(
-            `${liveUv > 0 ? '+' : ''}${liveUv.toFixed(1)} µV`,
-            width - 75,
-            centerY - channelHeight / 2 + 14
-          );
+          const textWidth = ctx.measureText(readout).width;
+          ctx.fillText(readout, Math.max(150, width - textWidth - 10), laneTop + 14);
         });
       }
 
@@ -128,7 +142,7 @@ export const EEGOscilloscope: React.FC = () => {
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [timeScale, gain]);
+  }, [timeScale, uvRange]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -180,6 +194,23 @@ export const EEGOscilloscope: React.FC = () => {
           )}
 
           <div className="flex items-center gap-1 bg-white/5 rounded-lg p-0.5 border border-white/10 text-[11px]">
+            {[100, 150, 300, 1000].map((range) => (
+              <button
+                key={range}
+                onClick={() => setUvRange(range)}
+                title="Вертикальный масштаб (AC, центрировано по среднему)"
+                className={`px-1.5 py-0.5 rounded cursor-pointer ${
+                  uvRange === range
+                    ? 'bg-white/20 text-white font-medium'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                ±{range}µV
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-1 bg-white/5 rounded-lg p-0.5 border border-white/10 text-[11px]">
             {[1, 2, 4].map((sec) => (
               <button
                 key={sec}
@@ -220,7 +251,7 @@ export const EEGOscilloscope: React.FC = () => {
       {isStreamActive && spectrum && (
         <div className="mt-2.5 pt-2.5 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px]">
           <span className="text-slate-400 font-mono">
-            Bipolar PSD (O1-T3 / O2-T4, 50 Hz notch):
+            Bipolar PSD (O1-T3 / O2-T4 · 1.5 Hz HPF + 50 Hz notch):
           </span>
           <div className="flex flex-wrap items-center gap-3 font-mono">
             <span className="text-amber-300">

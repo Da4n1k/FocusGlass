@@ -9,26 +9,88 @@ import type {
   PresetState,
   CalibrationResult,
   FeedbackStyle,
+  ForegroundWindowInfo,
+  HudAction,
+  OverlayFrame,
+  BrainBitStreamMode,
+  ChannelResistanceKOhm,
+  DumpSampleInput,
+  EegDumpStatus,
 } from '../services/eegTypes';
-import { BiofeedbackEngine, DEFAULT_SETTINGS } from '../services/biofeedbackEngine';
+import type { EEGRecording } from '../services/eegRecording';
+import { parseEEGRecording } from '../services/eegRecording';
+import { RecordingPlayback } from '../services/recordingPlayback';
+import { BiofeedbackEngine } from '../services/biofeedbackEngine';
+import { DEFAULT_SETTINGS, sanitizeSettings } from '../services/settingsSchema';
 import { simulationEngine } from '../services/simulationEngine';
 import { audioFeedback } from '../services/audioFeedback';
 import { tauriBridge } from '../services/tauriBridge';
+import { FitStabilityTracker } from '../services/headbandFitCheck';
+import {
+  EMPTY_STABILIZED_VISUALS,
+  OverlayVisualStabilizer,
+  type StabilizedOverlayVisuals,
+} from '../services/overlayVisualPolicy';
+import { areAllElectrodesUsable } from '../services/signalQuality';
+import {
+  createSessionRepository,
+  mergeSession,
+  type SessionStorageBackend,
+} from '../services/sessionRepository';
 
 const SETTINGS_STORAGE_KEY = 'focusglass.settings.v1';
-const SESSIONS_STORAGE_KEY = 'focusglass.sessions.v1';
+const CALIBRATION_STORAGE_KEY = 'focusglass.calibration.v1';
+/** Сессии короче этого значения в историю не попадают. */
+const MIN_SESSION_SECONDS = 3;
+const AUTOSAVE_INTERVAL_MS = 5000;
+/** Период публикации состояния БОС в единое окно оверлея (~15 Гц). */
+const OVERLAY_PUBLISH_INTERVAL_MS = 66;
+
+const hasWindow = typeof window !== 'undefined';
+const isTauri = tauriBridge.isTauri();
+
+function loadPersistedCalibration(): CalibrationResult | null {
+  if (!hasWindow || !window.localStorage) return null;
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(CALIBRATION_STORAGE_KEY) ?? 'null'
+    ) as CalibrationResult | null;
+    if (
+      !parsed ||
+      !Number.isFinite(parsed.baselineFocus) ||
+      !Number.isFinite(parsed.baselineRelaxation) ||
+      !Number.isFinite(parsed.variabilityFocus) ||
+      !Number.isFinite(parsed.variabilityRelaxation) ||
+      !Number.isFinite(parsed.recommendedThreshold) ||
+      (parsed.sampleCount ?? 0) <= 0
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function savePersistedCalibration(calibration: CalibrationResult): void {
+  if (!hasWindow || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(CALIBRATION_STORAGE_KEY, JSON.stringify(calibration));
+  } catch {
+    // Keep the active in-memory baseline if browser storage is unavailable.
+  }
+}
 
 function loadPersistedSettings(): FocusGlassSettings {
-  if (typeof window === 'undefined' || !window.localStorage) {
+  if (!hasWindow || !window.localStorage) {
     return { ...DEFAULT_SETTINGS };
   }
   try {
     const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    const parsed = JSON.parse(raw) as Partial<FocusGlassSettings>;
+    // localStorage is untrusted (hand-edited, older schema, corrupted): validate every field.
     return {
-      ...DEFAULT_SETTINGS,
-      ...parsed,
+      ...sanitizeSettings(JSON.parse(raw) as unknown),
       // Always start in simulator until physical BrainBit session is explicitly selected
       deviceSource: 'simulator',
     };
@@ -38,7 +100,7 @@ function loadPersistedSettings(): FocusGlassSettings {
 }
 
 function savePersistedSettings(settings: FocusGlassSettings): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
+  if (!hasWindow || !window.localStorage) return;
   try {
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   } catch {
@@ -46,111 +108,29 @@ function savePersistedSettings(settings: FocusGlassSettings): void {
   }
 }
 
-function generateSeedHistory(): SessionRecord[] {
-  const now = Date.now();
-  return [
-    {
-      id: `${now - 1000 * 60 * 60 * 2}`,
-      startedAt: new Date(now - 1000 * 60 * 52).toISOString(),
-      endedAt: new Date(now).toISOString(),
-      mode: 'concentration',
-      deviceSource: 'simulator',
-      threshold: 55,
-      durationSeconds: 52 * 60,
-      timeInFocusSeconds: Math.round(52 * 60 * 0.78),
-      timeInDimmingSeconds: Math.round(52 * 60 * 0.22),
-      distractionEventsCount: 5,
-      averageFocusScore: 78,
-      minFocusScore: 42,
-      maxFocusScore: 92,
-      artifactCount: 3,
-    },
-    {
-      id: `${now - 1000 * 60 * 60 * 24}`,
-      startedAt: new Date(now - 1000 * 60 * 60 * 24).toISOString(),
-      endedAt: new Date(now - 1000 * 60 * 60 * 24 + 1000 * 60 * 80).toISOString(),
-      mode: 'concentration',
-      deviceSource: 'simulator',
-      threshold: 55,
-      durationSeconds: 80 * 60,
-      timeInFocusSeconds: Math.round(80 * 60 * 0.74),
-      timeInDimmingSeconds: Math.round(80 * 60 * 0.26),
-      distractionEventsCount: 7,
-      averageFocusScore: 74,
-      minFocusScore: 38,
-      maxFocusScore: 95,
-      artifactCount: 5,
-    },
-    {
-      id: `${now - 1000 * 60 * 60 * 48}`,
-      startedAt: new Date(now - 1000 * 60 * 60 * 48).toISOString(),
-      endedAt: new Date(now - 1000 * 60 * 60 * 48 + 1000 * 60 * 45).toISOString(),
-      mode: 'concentration',
-      deviceSource: 'simulator',
-      threshold: 55,
-      durationSeconds: 45 * 60,
-      timeInFocusSeconds: Math.round(45 * 60 * 0.66),
-      timeInDimmingSeconds: Math.round(45 * 60 * 0.34),
-      distractionEventsCount: 6,
-      averageFocusScore: 66,
-      minFocusScore: 35,
-      maxFocusScore: 88,
-      artifactCount: 4,
-    },
-    {
-      id: `${now - 1000 * 60 * 60 * 53}`,
-      startedAt: new Date(now - 1000 * 60 * 60 * 53).toISOString(),
-      endedAt: new Date(now - 1000 * 60 * 60 * 53 + 1000 * 60 * 38).toISOString(),
-      mode: 'concentration',
-      deviceSource: 'simulator',
-      threshold: 55,
-      durationSeconds: 38 * 60,
-      timeInFocusSeconds: Math.round(38 * 60 * 0.81),
-      timeInDimmingSeconds: Math.round(38 * 60 * 0.19),
-      distractionEventsCount: 2,
-      averageFocusScore: 81,
-      minFocusScore: 48,
-      maxFocusScore: 96,
-      artifactCount: 1,
-    },
-    {
-      id: `${now - 1000 * 60 * 60 * 72}`,
-      startedAt: new Date(now - 1000 * 60 * 60 * 72).toISOString(),
-      endedAt: new Date(now - 1000 * 60 * 60 * 72 + 1000 * 60 * 65).toISOString(),
-      mode: 'concentration',
-      deviceSource: 'simulator',
-      threshold: 55,
-      durationSeconds: 65 * 60,
-      timeInFocusSeconds: Math.round(65 * 60 * 0.58),
-      timeInDimmingSeconds: Math.round(65 * 60 * 0.42),
-      distractionEventsCount: 11,
-      averageFocusScore: 58,
-      minFocusScore: 28,
-      maxFocusScore: 85,
-      artifactCount: 8,
-    },
-  ];
+function newSessionId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function loadSessionHistory(): SessionRecord[] {
-  if (typeof window === 'undefined' || !window.localStorage) return generateSeedHistory();
-  try {
-    const raw = window.localStorage.getItem(SESSIONS_STORAGE_KEY);
-    if (!raw) return generateSeedHistory();
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? (parsed as SessionRecord[]) : generateSeedHistory();
-  } catch {
-    return generateSeedHistory();
-  }
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
-function saveSessionHistory(records: SessionRecord[]): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  try {
-    window.localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(records.slice(0, 50)));
-  } catch {
-    // Ignore storage quota errors
-  }
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export interface UiNotice {
+  id: number;
+  kind: 'error' | 'info';
+  text: string;
 }
 
 export interface FocusTimelinePoint {
@@ -205,6 +185,7 @@ interface FocusStoreState {
   updateSettings: (newSettings: Partial<FocusGlassSettings>) => void;
 
   // View & Window
+  isTauri: boolean;
   viewMode: 'dashboard' | 'hud';
   setViewMode: (mode: 'dashboard' | 'hud') => void;
   isClickThrough: boolean;
@@ -212,21 +193,55 @@ interface FocusStoreState {
   toggleClickThrough: () => Promise<void>;
   isAlwaysOnTop: boolean;
   toggleAlwaysOnTop: () => Promise<void>;
+  overlayEnabled: boolean;
+  setOverlayEnabled: (enabled: boolean) => Promise<void>;
   isSettingsOpen: boolean;
   setIsSettingsOpen: (open: boolean) => void;
   activeTab: 'monitor' | 'oscilloscope' | 'electrodes' | 'calibration' | 'analytics' | 'settings';
   setActiveTab: (
     tab: 'monitor' | 'oscilloscope' | 'electrodes' | 'calibration' | 'analytics' | 'settings'
   ) => void;
+  notice: UiNotice | null;
+  showNotice: (kind: UiNotice['kind'], text: string) => void;
+  dismissNotice: () => void;
+  quit: () => Promise<void>;
 
   // Live Biometrics
   telemetry: EEGTelemetry | null;
   feedbackState: BiofeedbackFeedbackState;
   sessionStats: SessionStatistics;
   sessionHistory: SessionRecord[];
+  sessionStorageBackend: SessionStorageBackend;
+  sessionId: string;
   sessionStartedAt: string;
   deviceStatus: DeviceStatus;
+  /** Native overlay windows created by the backend; 0 means the in-page overlay is used. */
+  overlayWindowCount: number;
+  /** True on Windows when unified `overlay` window hosts dimming + HUD. */
+  unifiedHud: boolean;
   isPaused: boolean;
+
+  // Smart distraction blocking
+  distractionSupported: boolean;
+  foregroundWindow: ForegroundWindowInfo | null;
+  thresholdBlurActive: boolean;
+  overlayVisuals: StabilizedOverlayVisuals;
+
+  // BrainBit BLE & Fit Check
+  fitHoldMs: number;
+  fitVerified: boolean;
+  lastFitResistance: ChannelResistanceKOhm | null;
+  connectBrainBitDevice: (address: string, initialMode?: BrainBitStreamMode) => Promise<DeviceStatus>;
+  disconnectBrainBitDevice: () => Promise<void>;
+  startFitCheck: () => Promise<void>;
+  startEegStreamFromFitCheck: () => Promise<void>;
+
+  // Raw 250 Hz EEG CSV Dump Recorder
+  dumpStatus: EegDumpStatus;
+  startEegDump: (sessionTag?: string) => Promise<void>;
+  stopEegDump: () => Promise<void>;
+  setEegDumpLabel: (label: string, oneShot?: boolean) => Promise<void>;
+  openEegDumpsFolder: () => Promise<void>;
 
   // Controls
   activePreset: PresetState;
@@ -236,6 +251,8 @@ interface FocusStoreState {
   pauseForMinutes: (minutes: number) => void;
   setElectrodeContact: (channel: 't3' | 't4' | 'o1' | 'o2', ok: boolean) => void;
   resetSession: (saveCurrent?: boolean) => void;
+  persistActiveSession: () => Promise<void>;
+  clearSessionHistory: () => Promise<void>;
   exportSessionsCsv: (singleRecord?: SessionRecord) => void;
 
   // Calibration
@@ -248,19 +265,239 @@ interface FocusStoreState {
   startCalibration: (durationSeconds?: 10 | 30) => void;
   cancelCalibration: () => void;
   applyCalibration: () => void;
+  activeCalibration: CalibrationResult | null;
+
+  // Prerecorded Neurotech/BrainBit stream playback
+  recording: EEGRecording | null;
+  recordingStatus: 'empty' | 'ready' | 'playing' | 'paused' | 'ended';
+  recordingProgress: number;
+  recordingSpeed: number;
+  recordingError: string | null;
+  loadRecording: (text: string, name: string) => void;
+  playRecording: () => void;
+  pauseRecording: () => void;
+  stopRecording: () => void;
+  seekRecording: (progress: number) => void;
+  setRecordingSpeed: (speed: number) => void;
 }
 
 export const useFocusStore = create<FocusStoreState>((set, get) => {
   const initialSettings = loadPersistedSettings();
+  const playback = new RecordingPlayback();
+  const storedCalibration = loadPersistedCalibration();
+  const sessions = createSessionRepository();
+  const fitStability = new FitStabilityTracker();
+  let simulatorWasPausedBeforePlayback: boolean | null = null;
   let calibrationFrames: EEGTelemetry[] = [];
   let calibrationTimer: ReturnType<typeof setInterval> | null = null;
   let pauseResumeTimer: ReturnType<typeof setTimeout> | null = null;
   let lastTimelineSample = Date.now();
+  let noticeCounter = 0;
+  let lastOverlayPublishAt = 0;
+  let overlayErrorReported = false;
+  let lastAutosavedDuration = -1;
+  const overlayStabilizer = new OverlayVisualStabilizer();
+  let latestOverlayVisuals: StabilizedOverlayVisuals = { ...EMPTY_STABILIZED_VISUALS };
+  let simDumpQueue: DumpSampleInput[] = [];
+  let simDumpPackSeq = 0;
 
   const clearPauseResumeTimer = () => {
     if (pauseResumeTimer) {
       clearTimeout(pauseResumeTimer);
       pauseResumeTimer = null;
+    }
+  };
+
+  const monotonicNowMs = (): number =>
+    typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+  const updateStabilizedOverlayVisuals = (
+    feedbackState: BiofeedbackFeedbackState,
+    settings: FocusGlassSettings,
+    deviceStatus: DeviceStatus,
+    suppressForUi: boolean = false
+  ): StabilizedOverlayVisuals => {
+    const isSimulator = settings.deviceSource === 'simulator';
+    const streamActive = isSimulator || deviceStatus.connected;
+    const isFitCheckActive = !isSimulator && deviceStatus.streamMode === 'resist';
+    const hardClear = !streamActive || isFitCheckActive || suppressForUi;
+    const canDim = !hardClear && feedbackState.isContactOk && feedbackState.isDimmingActive;
+    latestOverlayVisuals = overlayStabilizer.update(
+      {
+        visualMode: settings.overlayMode,
+        canDim,
+        hardClear,
+        deficit: feedbackState.deficit,
+        rawOpacity: feedbackState.overlayOpacity,
+        maxOpacity: settings.dimmingMaxOpacity,
+        blurRadiusSetting: settings.blurRadius,
+      },
+      monotonicNowMs()
+    );
+    return latestOverlayVisuals;
+  };
+
+  const flushSimulatorDumpQueue = (force = false): void => {
+    if (simDumpQueue.length === 0) return;
+    if (!force && simDumpQueue.length < 25) return;
+    const batch = simDumpQueue;
+    simDumpQueue = [];
+    void tauriBridge.appendEegDumpSamples(batch).catch((err: unknown) => {
+      console.warn('[FocusStore] appendEegDumpSamples failed:', err);
+    });
+  };
+
+  const syncSimulatorDumpListener = (status: EegDumpStatus): void => {
+    if (isTauri && status.recording && status.source === 'simulator') {
+      simulationEngine.setSimulatorSampleListener((samples) => {
+        for (const s of samples) {
+          simDumpPackSeq += 1;
+          simDumpQueue.push({
+            timestamp: s.timestamp,
+            packNum: simDumpPackSeq,
+            marker: s.isArtifact ? 1 : 0,
+            t3: s.rawChannels.t3,
+            t4: s.rawChannels.t4,
+            o1: s.rawChannels.o1,
+            o2: s.rawChannels.o2,
+            t3Ok: s.signalQuality.t3,
+            t4Ok: s.signalQuality.t4,
+            o1Ok: s.signalQuality.o1,
+            o2Ok: s.signalQuality.o2,
+          });
+        }
+        flushSimulatorDumpQueue(false);
+      });
+    } else {
+      simulationEngine.setSimulatorSampleListener(null);
+      simDumpQueue = [];
+    }
+  };
+
+  if (storedCalibration) simulationEngine.setPersonalCalibration(storedCalibration);
+
+  const showNotice = (kind: UiNotice['kind'], text: string): void => {
+    noticeCounter += 1;
+    set({ notice: { id: noticeCounter, kind, text } });
+  };
+
+  const restoreSimulatorAfterPlayback = () => {
+    simulationEngine.setRecordingPlaybackActive(false);
+    if (simulatorWasPausedBeforePlayback !== null) {
+      if (simulationEngine.getIsPaused() !== simulatorWasPausedBeforePlayback) {
+        simulationEngine.togglePause();
+      }
+      simulatorWasPausedBeforePlayback = null;
+    }
+  };
+
+  /** Текущая сессия как запись истории; `null`, если она ещё слишком коротка. */
+  const buildActiveRecord = (): SessionRecord | null => {
+    const { sessionStats, settings, sessionStartedAt, sessionId, focusTimeline } = get();
+    if (sessionStats.durationSeconds < MIN_SESSION_SECONDS) return null;
+    return {
+      ...sessionStats,
+      id: sessionId,
+      startedAt: sessionStartedAt,
+      endedAt: new Date().toISOString(),
+      mode: settings.mode,
+      deviceSource: settings.deviceSource,
+      threshold: settings.threshold,
+      ...(focusTimeline.length > 0 ? { timeline: [...focusTimeline] } : {}),
+    };
+  };
+
+  const persistActiveSession = async (): Promise<void> => {
+    const record = buildActiveRecord();
+    if (!record || record.durationSeconds === lastAutosavedDuration) return;
+    await sessions.upsert(record);
+    lastAutosavedDuration = record.durationSeconds;
+  };
+
+  const buildOverlayFrame = (): OverlayFrame => {
+    const state = get();
+    const { feedbackState, settings, deviceStatus, telemetry, foregroundWindow } = state;
+    const isSimulator = settings.deviceSource === 'simulator';
+    const streamActive = isSimulator || deviceStatus.connected;
+    const visuals = latestOverlayVisuals;
+    const hasVisibleDistractors =
+      settings.overlayMode === 'distractors' &&
+      Boolean(
+        (foregroundWindow?.distractorRegions && foregroundWindow.distractorRegions.length > 0) ||
+          (foregroundWindow?.isDistractor && foregroundWindow.overlayRect)
+      );
+    return {
+      opacity: visuals.opacity,
+      blurPx: visuals.blurPx,
+      metric: feedbackState.smoothedMetric,
+      threshold: Math.round(feedbackState.effectiveThreshold ?? settings.threshold),
+      mode: settings.mode,
+      scope: settings.dimmingScope,
+      visualStyle: settings.overlayMode,
+      hasVisibleDistractors,
+      showPauseCard: visuals.showPauseCard,
+      showCueCard: visuals.showCueCard,
+      streamActive,
+      contactOk: feedbackState.isContactOk,
+      artifactFrozen: feedbackState.isArtifactFrozen,
+      isSimulator,
+      paused: state.isPaused,
+      hudVisible: state.viewMode === 'hud',
+      activePreset: state.activePreset,
+      sensors: streamActive
+        ? telemetry?.signalQuality ?? { t3: true, t4: true, o1: true, o2: true }
+        : { t3: false, t4: false, o1: false, o2: false },
+    };
+  };
+
+  const publishOverlay = (): void => {
+    if (!isTauri || !get().unifiedHud) return;
+    lastOverlayPublishAt = performance.now();
+    tauriBridge.updateOverlay(buildOverlayFrame()).then(
+      () => {
+        overlayErrorReported = false;
+      },
+      (err: unknown) => {
+        // Кадры идут ~15 раз в секунду — сообщаем об ошибке один раз, а не потоком.
+        if (!overlayErrorReported) {
+          overlayErrorReported = true;
+          showNotice('error', `Overlay window is not responding: ${errorText(err)}`);
+        }
+      }
+    );
+  };
+
+  /** Передаёт Rust-монитору активных окон режим затемнения и список шаблонов. */
+  const applyDistractionConfig = async (): Promise<void> => {
+    const { settings } = get();
+    try {
+      const status = await tauriBridge.setDistractionConfig({
+        enabled: settings.dimmingScope === 'distractors',
+        patterns: settings.distractorPatterns,
+      });
+      set({ distractionSupported: status.supported });
+      if (!status.supported && settings.dimmingScope === 'distractors') {
+        get().updateSettings({ dimmingScope: 'fullscreen' });
+      }
+      if (!status.enabled) {
+        set({ foregroundWindow: null });
+      }
+    } catch (err) {
+      showNotice('error', `Active window monitor error: ${errorText(err)}`);
+    }
+  };
+
+  const handleHudAction = (action: HudAction): void => {
+    switch (action.type) {
+      case 'toggle_pause':
+        get().togglePause();
+        break;
+      case 'set_preset':
+        get().setPreset(action.preset);
+        break;
+      case 'inject_artifact':
+        get().injectArtifact();
+        break;
     }
   };
 
@@ -278,7 +515,10 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       state.settings.audioFeedbackEnabled &&
       feedbackState.isDimmingActive &&
       feedbackState.isContactOk &&
-      !(state.settings.deviceSource === 'bluetooth' && !state.deviceStatus.connected);
+      !(
+        state.settings.deviceSource === 'bluetooth' &&
+        (!state.deviceStatus.connected || state.deviceStatus.streamMode === 'resist')
+      );
 
     audioFeedback.sync(shouldPlayAudio, feedbackState.audioVolume);
 
@@ -307,6 +547,13 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       updatedTimeline = [...state.focusTimeline.slice(-599), newPoint];
     }
 
+    const visualsForStore = updateStabilizedOverlayVisuals(
+      feedbackState,
+      state.settings,
+      state.deviceStatus,
+      state.isPaused || isSummaryOrEnded || state.activeNav === 'onboarding'
+    );
+
     set({
       telemetry,
       feedbackState,
@@ -314,13 +561,30 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       focusTimeline: updatedTimeline,
       activePreset: simulationEngine.getPreset(),
       isPaused: simulationEngine.getIsPaused(),
+      thresholdBlurActive: visualsForStore.thresholdBlurActive,
+      overlayVisuals: visualsForStore,
     });
+
+    if (
+      isTauri &&
+      state.unifiedHud &&
+      performance.now() - lastOverlayPublishAt >= OVERLAY_PUBLISH_INTERVAL_MS
+    ) {
+      publishOverlay();
+    }
   });
 
   simulationEngine.start(initialSettings);
 
   void tauriBridge.getDeviceStatus().then((status) => {
     set({ deviceStatus: status });
+  });
+
+  void tauriBridge.getOverlayInfo().then((info) => {
+    set({ overlayWindowCount: info.count, unifiedHud: Boolean(info.unifiedHud) });
+    if (info.unifiedHud) {
+      publishOverlay();
+    }
   });
 
   void tauriBridge.onBrainBitTelemetry((packet) => {
@@ -334,6 +598,131 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       simulationEngine.ingestRawBrainBitPacket(packet);
     }
   });
+
+  void tauriBridge.onBrainBitRawBatch((packets) => {
+    if (get().settings.deviceSource === 'bluetooth') {
+      simulationEngine.ingestRawBrainBitBatch(packets);
+    }
+  });
+
+  void tauriBridge.onBrainBitResist((update) => {
+    if (get().settings.deviceSource === 'bluetooth') {
+      const allUsable = areAllElectrodesUsable(update.signalQuality, update.resistanceKOhm);
+      const fit = fitStability.update(allUsable, update.timestamp || Date.now());
+      simulationEngine.applyBrainBitResistUpdate(update);
+      set({
+        fitHoldMs: fit.holdMs,
+        fitVerified: fit.verified,
+        lastFitResistance: update.resistanceKOhm,
+      });
+    }
+  });
+
+  void tauriBridge.onBrainBitStatus((status) => {
+    const prevMode = get().deviceStatus.streamMode;
+    if (!status.connected || status.streamMode === 'idle') {
+      fitStability.reset();
+      set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false, lastFitResistance: null });
+    } else if (status.streamMode === 'resist' && prevMode !== 'resist') {
+      fitStability.reset();
+      set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false });
+    } else {
+      set({ deviceStatus: status });
+    }
+    if (!status.connected || status.streamMode !== 'signal') {
+      audioFeedback.sync(false, 0);
+    }
+    const visuals = updateStabilizedOverlayVisuals(get().feedbackState, get().settings, status);
+    set({
+      thresholdBlurActive: visuals.thresholdBlurActive,
+      overlayVisuals: visuals,
+    });
+    publishOverlay();
+  });
+
+  if (isTauri) {
+    void tauriBridge.getEegDumpStatus().then(
+      (dumpStatus) => {
+        syncSimulatorDumpListener(dumpStatus);
+        set({ dumpStatus });
+      },
+      () => undefined
+    );
+    void tauriBridge.onEegDumpStatus((dumpStatus) => {
+      syncSimulatorDumpListener(dumpStatus);
+      set({ dumpStatus });
+    });
+  }
+
+  void sessions.list().then(
+    (records) => set({ sessionHistory: records }),
+    (err: unknown) => showNotice('error', `Failed to load session history: ${errorText(err)}`)
+  );
+
+  if (isTauri) {
+    void tauriBridge.on<boolean>('click-through-changed', (enabled) =>
+      set({ isClickThrough: enabled })
+    );
+    void tauriBridge.on<unknown>('click-through-disabled', () =>
+      set({ isClickThrough: false })
+    );
+    void tauriBridge.on<boolean>('overlay-enabled-changed', (enabled) =>
+      set({ overlayEnabled: enabled })
+    );
+    void tauriBridge.on<null>('dashboard-shown', () => {
+      set({ viewMode: 'dashboard' });
+      if (get().unifiedHud) {
+        publishOverlay();
+      }
+    });
+    void tauriBridge.on<{ message?: string }>('backend-error', (error) =>
+      showNotice('error', error?.message ?? 'Unknown backend error')
+    );
+    void tauriBridge.on<HudAction>('hud-action', handleHudAction);
+    void tauriBridge.on<ForegroundWindowInfo | null>('foreground-window', (info) => {
+      set({ foregroundWindow: info });
+      if (get().settings.overlayMode === 'distractors') {
+        publishOverlay();
+      }
+    });
+    void tauriBridge.on<null>('quit-requested', () => {
+      void get().quit();
+    });
+
+    tauriBridge.getWindowState().then(
+      (windowState) => {
+        if (windowState) {
+          set({
+            isClickThrough: windowState.clickThrough,
+            overlayEnabled: windowState.overlayEnabled,
+            isAlwaysOnTop: windowState.alwaysOnTop,
+          });
+        }
+      },
+      (err: unknown) => showNotice('error', `Failed to read window state: ${errorText(err)}`)
+    );
+
+    // Стор ещё не создан в момент выполнения этой функции — откладываем на микрозадачу.
+    queueMicrotask(() => {
+      void applyDistractionConfig();
+      publishOverlay();
+    });
+  }
+
+  if (hasWindow) {
+    // Автосохранение: при любом способе закрытия теряется не больше 5 секунд сессии.
+    window.setInterval(() => {
+      persistActiveSession().catch((err: unknown) => {
+        showNotice('error', `Session autosave failed: ${errorText(err)}`);
+      });
+    }, AUTOSAVE_INTERVAL_MS);
+
+    // В браузере localStorage пишется синхронно — успеваем сохранить при закрытии вкладки.
+    window.addEventListener('pagehide', () => {
+      const record = buildActiveRecord();
+      if (record) sessions.upsertSync(record);
+    });
+  }
 
   return {
     activeNav: 'session',
@@ -364,10 +753,10 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     finishSession: () => {
       clearPauseResumeTimer();
-      const { sessionStats, settings, sessionStartedAt, sessionHistory, focusTimeline } = get();
+      const { sessionStats, settings, sessionStartedAt, sessionHistory, focusTimeline, sessionId } = get();
       const record: SessionRecord = {
         ...sessionStats,
-        id: `${Date.now()}`,
+        id: sessionId,
         startedAt: sessionStartedAt,
         endedAt: new Date().toISOString(),
         mode: settings.mode,
@@ -375,8 +764,10 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         threshold: settings.threshold,
         timeline: [...focusTimeline],
       };
-      const updatedHistory = [record, ...sessionHistory].slice(0, 50);
-      saveSessionHistory(updatedHistory);
+      const updatedHistory = mergeSession(sessionHistory, record);
+      sessions.upsert(record).catch((err: unknown) => {
+        showNotice('error', `Session was not saved: ${errorText(err)}`);
+      });
       audioFeedback.sync(false, 0);
       get().resetSession(false);
       set({
@@ -385,6 +776,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         activeNav: 'summary',
         isSessionEnded: true,
       });
+      publishOverlay();
     },
 
     openSessionSummary: (record) => {
@@ -434,6 +826,12 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       const isSwitchingSource =
         Boolean(newSettings.deviceSource) && newSettings.deviceSource !== current.deviceSource;
 
+      if (
+        isSwitchingSource &&
+        (get().recordingStatus === 'playing' || get().recordingStatus === 'paused')
+      ) {
+        get().stopRecording();
+      }
       simulationEngine.updateSettings(newSettings);
       const updated = simulationEngine.getSettings();
       savePersistedSettings(updated);
@@ -442,18 +840,35 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         audioFeedback.sync(false, 0);
       }
 
+      const refreshedVisuals = updateStabilizedOverlayVisuals(
+        get().feedbackState,
+        updated,
+        get().deviceStatus
+      );
+
       if (isSwitchingSource) {
+        if (get().dumpStatus.recording) {
+          void get().stopEegDump();
+        }
         audioFeedback.sync(false, 0);
+        fitStability.reset();
         simulationEngine.resetSession();
+        lastAutosavedDuration = -1;
         const isBluetooth = updated.deviceSource === 'bluetooth';
         set({
           settings: updated,
           feedbackStyle: updated.feedbackStyle ?? 'dimming',
+          fitHoldMs: 0,
+          fitVerified: false,
+          lastFitResistance: null,
+          sessionId: newSessionId(),
           sessionStartedAt: new Date().toISOString(),
           sessionStats: simulationEngine.getSessionStats(),
           focusTimeline: isBluetooth ? [] : generateInitialTimeline(updated.threshold),
           isSessionEnded: false,
           isGentleAlertDismissed: false,
+          thresholdBlurActive: refreshedVisuals.thresholdBlurActive,
+          overlayVisuals: refreshedVisuals,
           ...(isBluetooth
             ? {
                 telemetry: null,
@@ -472,7 +887,17 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
             : {}),
         });
         void tauriBridge.setDeviceSource(updated.deviceSource).then((deviceStatus) => {
-          set({ deviceStatus });
+          const nextVisuals = updateStabilizedOverlayVisuals(
+            get().feedbackState,
+            get().settings,
+            deviceStatus
+          );
+          set({
+            deviceStatus,
+            thresholdBlurActive: nextVisuals.thresholdBlurActive,
+            overlayVisuals: nextVisuals,
+          });
+          publishOverlay();
         });
         return;
       }
@@ -480,50 +905,113 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       set({
         settings: updated,
         feedbackStyle: updated.feedbackStyle ?? 'dimming',
+        thresholdBlurActive: refreshedVisuals.thresholdBlurActive,
+        overlayVisuals: refreshedVisuals,
       });
+
+      if (
+        isTauri &&
+        (updated.dimmingScope !== current.dimmingScope ||
+          updated.distractorPatterns !== current.distractorPatterns)
+      ) {
+        void applyDistractionConfig();
+      }
+
+      publishOverlay();
     },
 
+    isTauri,
     viewMode: 'dashboard',
     setViewMode: (mode) => {
+      set({ viewMode: mode });
       if (mode === 'dashboard' && get().isClickThrough) {
-        void tauriBridge.setClickThrough(false);
-        set({ viewMode: mode, isClickThrough: false });
-      } else {
-        set({ viewMode: mode });
+        void get().setClickThrough(false);
       }
-      void tauriBridge.setOverlayMode(mode === 'hud');
+      if (isTauri && get().unifiedHud) {
+        publishOverlay();
+        tauriBridge.setHudMode(mode === 'hud').catch((err: unknown) => {
+          set({ viewMode: 'dashboard' });
+          publishOverlay();
+          showNotice('error', `Failed to switch view mode: ${errorText(err)}`);
+        });
+      } else if (isTauri) {
+        void tauriBridge.setOverlayMode(mode === 'hud');
+      }
     },
 
     isClickThrough: false,
     setClickThrough: async (enabled) => {
-      await tauriBridge.setClickThrough(enabled);
-      set({ isClickThrough: enabled });
+      // Mirror only what the native window really applied (null = IPC failure).
+      const applied = await tauriBridge.setClickThrough(enabled);
+      if (applied !== null) {
+        set({ isClickThrough: applied });
+      } else if (isTauri) {
+        showNotice(
+          'error',
+          `Click-through was not changed: ${tauriBridge.consumeLastError() ?? 'IPC call failed'}`
+        );
+      }
     },
     toggleClickThrough: async () => {
-      const target = !get().isClickThrough;
-      await tauriBridge.setClickThrough(target);
-      set({ isClickThrough: target });
+      await get().setClickThrough(!get().isClickThrough);
     },
 
-    isAlwaysOnTop: true,
+    isAlwaysOnTop: false,
     toggleAlwaysOnTop: async () => {
-      const target = !get().isAlwaysOnTop;
-      await tauriBridge.toggleAlwaysOnTop(target);
-      set({ isAlwaysOnTop: target });
+      const applied = await tauriBridge.toggleAlwaysOnTop(!get().isAlwaysOnTop);
+      if (applied !== null) {
+        set({ isAlwaysOnTop: applied });
+      } else if (isTauri) {
+        showNotice(
+          'error',
+          `Always-on-top was not changed: ${tauriBridge.consumeLastError() ?? 'IPC call failed'}`
+        );
+      }
+    },
+
+    overlayEnabled: true,
+    setOverlayEnabled: async (enabled) => {
+      try {
+        set({ overlayEnabled: await tauriBridge.setOverlayEnabled(enabled) });
+      } catch (err) {
+        showNotice('error', `Overlay was not changed: ${errorText(err)}`);
+      }
     },
 
     isSettingsOpen: false,
     setIsSettingsOpen: (open) => {
+      set({ isSettingsOpen: open });
       if (open && get().isClickThrough) {
-        void tauriBridge.setClickThrough(false);
-        set({ isSettingsOpen: open, isClickThrough: false });
-      } else {
-        set({ isSettingsOpen: open });
+        void get().setClickThrough(false);
       }
     },
 
     activeTab: 'monitor',
     setActiveTab: (tab) => set({ activeTab: tab }),
+
+    notice: null,
+    showNotice,
+    dismissNotice: () => set({ notice: null }),
+
+    quit: async () => {
+      if (get().dumpStatus.recording) {
+        try {
+          await get().stopEegDump();
+        } catch (err) {
+          console.warn('[FocusStore] dump stop on quit failed:', err);
+        }
+      }
+      try {
+        await persistActiveSession();
+      } catch (err) {
+        console.warn('[FocusStore] final session save failed:', err);
+      }
+      try {
+        await tauriBridge.quitApp();
+      } catch (err) {
+        showNotice('error', `Failed to quit: ${errorText(err)}`);
+      }
+    },
 
     telemetry: null,
     feedbackState: {
@@ -547,7 +1035,9 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       maxFocusScore: 0,
       artifactCount: 0,
     },
-    sessionHistory: loadSessionHistory(),
+    sessionHistory: [],
+    sessionStorageBackend: sessions.backend,
+    sessionId: newSessionId(),
     sessionStartedAt: new Date().toISOString(),
     deviceStatus: {
       connected: true,
@@ -558,12 +1048,182 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       samplingRateHz: 250,
       statusMessage: 'Synthetic 4-channel EEG stream active (demo/testing mode).',
     },
+    overlayWindowCount: 0,
+    unifiedHud: false,
     isPaused: false,
+
+    distractionSupported: false,
+    foregroundWindow: null,
+    thresholdBlurActive: false,
+    overlayVisuals: { ...EMPTY_STABILIZED_VISUALS },
+
+    fitHoldMs: 0,
+    fitVerified: false,
+    lastFitResistance: null,
+
+    dumpStatus: {
+      recording: false,
+      dumpsDir: '',
+      sampleCount: 0,
+      durationSeconds: 0,
+      markerCount: 0,
+    },
+
+    startEegDump: async (sessionTag) => {
+      const { settings, deviceStatus } = get();
+      if (settings.deviceSource === 'bluetooth' && !deviceStatus.connected) {
+        showNotice('info', 'Сначала подключите BrainBit BLE во вкладке BrainBit & Simulator.');
+        return;
+      }
+      try {
+        simDumpPackSeq = 0;
+        simDumpQueue = [];
+        const status = await tauriBridge.startEegDump(settings.deviceSource, sessionTag);
+        syncSimulatorDumpListener(status);
+        set({ dumpStatus: status });
+        if (settings.deviceSource === 'bluetooth') {
+          const updatedDevice = await tauriBridge.getDeviceStatus();
+          set({ deviceStatus: updatedDevice });
+          publishOverlay();
+        }
+        showNotice('info', `Запись дампа ЭЭГ запущена: ${status.fileName ?? 'CSV'}`);
+      } catch (err) {
+        showNotice('error', `Не удалось начать запись дампа: ${errorText(err)}`);
+      }
+    },
+
+    stopEegDump: async () => {
+      try {
+        flushSimulatorDumpQueue(true);
+        simulationEngine.setSimulatorSampleListener(null);
+        const status = await tauriBridge.stopEegDump();
+        set({ dumpStatus: status });
+        if (status.lastSavedPath) {
+          showNotice(
+            'info',
+            `Дамп ЭЭГ сохранён (${(status.lastSavedSamples ?? 0).toLocaleString()} отсч.): ${status.lastSavedPath}`
+          );
+        }
+      } catch (err) {
+        showNotice('error', `Ошибка остановки записи дампа: ${errorText(err)}`);
+      }
+    },
+
+    setEegDumpLabel: async (label, oneShot = false) => {
+      if (!get().dumpStatus.recording) return;
+      try {
+        flushSimulatorDumpQueue(true);
+        const status = await tauriBridge.setEegDumpLabel(label, oneShot);
+        set({ dumpStatus: status });
+      } catch (err) {
+        showNotice('error', `Не удалось поставить метку дампа: ${errorText(err)}`);
+      }
+    },
+
+    openEegDumpsFolder: async () => {
+      try {
+        const dir = await tauriBridge.openEegDumpsFolder();
+        if (dir) {
+          set((prev) => ({ dumpStatus: { ...prev.dumpStatus, dumpsDir: dir } }));
+        }
+      } catch (err) {
+        showNotice('error', `Не удалось открыть папку дампов: ${errorText(err)}`);
+      }
+    },
+
+    connectBrainBitDevice: async (address, initialMode = 'resist') => {
+      try {
+        const status = await tauriBridge.connectBrainBit(address, initialMode);
+        if (get().settings.deviceSource !== 'bluetooth') {
+          simulationEngine.updateSettings({ deviceSource: 'bluetooth' });
+          const updated = simulationEngine.getSettings();
+          savePersistedSettings(updated);
+          set({ settings: updated });
+        }
+        fitStability.reset();
+        set({ deviceStatus: status, fitHoldMs: 0, fitVerified: false, lastFitResistance: null });
+        publishOverlay();
+        showNotice(
+          'info',
+          initialMode === 'resist'
+            ? `BrainBit подключён (${status.deviceName}). Идёт проверка посадки электродов.`
+            : `BrainBit подключён (${status.deviceName}).`
+        );
+        return status;
+      } catch (err) {
+        const message = errorText(err);
+        showNotice('error', `Не удалось подключиться к BrainBit: ${message}`);
+        throw err;
+      }
+    },
+
+    disconnectBrainBitDevice: async () => {
+      try {
+        const status = await tauriBridge.disconnectBrainBit();
+        fitStability.reset();
+        audioFeedback.sync(false, 0);
+        const visuals = updateStabilizedOverlayVisuals(get().feedbackState, get().settings, status);
+        set({
+          deviceStatus: status,
+          fitHoldMs: 0,
+          fitVerified: false,
+          lastFitResistance: null,
+          thresholdBlurActive: visuals.thresholdBlurActive,
+          overlayVisuals: visuals,
+        });
+        publishOverlay();
+      } catch (err) {
+        showNotice('error', `Ошибка отключения BrainBit: ${errorText(err)}`);
+      }
+    },
+
+    startFitCheck: async () => {
+      const { settings, deviceStatus } = get();
+      if (settings.deviceSource === 'simulator') {
+        fitStability.reset();
+        set({ fitHoldMs: 0, fitVerified: false });
+        return;
+      }
+      if (!deviceStatus.connected) {
+        showNotice('info', 'Сначала подключите BrainBit во вкладке BrainBit & Simulator.');
+        return;
+      }
+      try {
+        fitStability.reset();
+        audioFeedback.sync(false, 0);
+        const status = await tauriBridge.setBrainBitMode('resist');
+        const visuals = updateStabilizedOverlayVisuals(get().feedbackState, get().settings, status);
+        set({
+          deviceStatus: status,
+          fitHoldMs: 0,
+          fitVerified: false,
+          thresholdBlurActive: visuals.thresholdBlurActive,
+          overlayVisuals: visuals,
+        });
+        publishOverlay();
+      } catch (err) {
+        showNotice('error', `Не удалось запустить проверку посадки: ${errorText(err)}`);
+      }
+    },
+
+    startEegStreamFromFitCheck: async () => {
+      const { settings, deviceStatus } = get();
+      if (settings.deviceSource !== 'bluetooth' || !deviceStatus.connected) return;
+      try {
+        const status = await tauriBridge.setBrainBitMode('signal');
+        set({ deviceStatus: status });
+        publishOverlay();
+      } catch (err) {
+        showNotice('error', `Не удалось запустить поток ЭЭГ 250 Гц: ${errorText(err)}`);
+        throw err;
+      }
+    },
 
     activePreset: 'calm_flow',
     setPreset: (preset) => {
       simulationEngine.setPreset(preset);
       set({ activePreset: preset });
+      publishOverlay();
     },
 
     injectArtifact: () => {
@@ -577,6 +1237,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         audioFeedback.sync(false, 0);
       }
       set({ isPaused: paused });
+      publishOverlay();
     },
 
     pauseForMinutes: (minutes) => {
@@ -603,49 +1264,56 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     resetSession: (saveCurrent = true) => {
       clearPauseResumeTimer();
-      const { sessionStats, settings, sessionStartedAt, sessionHistory } = get();
-      let updatedHistory = sessionHistory;
+      const record = saveCurrent ? buildActiveRecord() : null;
+      let updatedHistory = get().sessionHistory;
 
-      if (saveCurrent && sessionStats.durationSeconds >= 3) {
-        const record: SessionRecord = {
-          ...sessionStats,
-          id: `${Date.now()}`,
-          startedAt: sessionStartedAt,
-          endedAt: new Date().toISOString(),
-          mode: settings.mode,
-          deviceSource: settings.deviceSource,
-          threshold: settings.threshold,
-        };
-        updatedHistory = [record, ...sessionHistory].slice(0, 50);
-        saveSessionHistory(updatedHistory);
+      if (record) {
+        updatedHistory = mergeSession(updatedHistory, record);
+        sessions.upsert(record).catch((err: unknown) => {
+          showNotice('error', `Session was not saved: ${errorText(err)}`);
+        });
       }
 
       simulationEngine.resetSession();
       audioFeedback.sync(false, 0);
+      overlayStabilizer.reset(monotonicNowMs());
+      latestOverlayVisuals = { ...EMPTY_STABILIZED_VISUALS };
+      lastAutosavedDuration = -1;
       set({
         sessionHistory: updatedHistory,
+        sessionId: newSessionId(),
         sessionStartedAt: new Date().toISOString(),
         sessionStats: simulationEngine.getSessionStats(),
-        ...(settings.deviceSource === 'bluetooth' ? { focusTimeline: [] } : {}),
+        ...(get().settings.deviceSource === 'bluetooth' ? { focusTimeline: [] } : {}),
+        thresholdBlurActive: false,
+        overlayVisuals: latestOverlayVisuals,
       });
+      publishOverlay();
+    },
+
+    persistActiveSession,
+
+    clearSessionHistory: async () => {
+      try {
+        await sessions.clear();
+        // Активная сессия начнёт сохраняться заново при следующем автосохранении.
+        lastAutosavedDuration = -1;
+        set({ sessionHistory: [] });
+      } catch (err) {
+        showNotice('error', `History was not cleared: ${errorText(err)}`);
+      }
     },
 
     exportSessionsCsv: (singleRecord) => {
       if (typeof document === 'undefined') return;
-      const { sessionHistory, sessionStats, settings, sessionStartedAt } = get();
+      const { sessionHistory } = get();
 
-      const rows: SessionRecord[] = singleRecord ? [singleRecord] : [...sessionHistory];
-      if (!singleRecord && sessionStats.durationSeconds >= 1) {
-        rows.unshift({
-          ...sessionStats,
-          id: 'active',
-          startedAt: sessionStartedAt,
-          endedAt: new Date().toISOString(),
-          mode: settings.mode,
-          deviceSource: settings.deviceSource,
-          threshold: settings.threshold,
-        });
-      }
+      const active = buildActiveRecord();
+      const rows: SessionRecord[] = singleRecord
+        ? [singleRecord]
+        : active
+        ? [active, ...sessionHistory.filter((r) => r.id !== active.id)]
+        : [...sessionHistory];
 
       const escapeCsv = (val: string | number) => {
         const s = String(val);
@@ -691,18 +1359,11 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       );
 
       const csv = [header, ...lines].join('\n');
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
       const dateStr = new Date().toISOString().slice(0, 10);
-      link.href = url;
-      link.download = singleRecord
-        ? `focusglass-session-${dateStr}.csv`
-        : `focusglass-sessions-${dateStr}.csv`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      downloadBlob(
+        new Blob([csv], { type: 'text/csv;charset=utf-8;' }),
+        singleRecord ? `focusglass-session-${dateStr}.csv` : `focusglass-sessions-${dateStr}.csv`
+      );
     },
 
     isCalibrating: false,
@@ -710,7 +1371,8 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     setCalibrationDuration: (seconds) => set({ calibrationDurationSeconds: seconds }),
     calibrationProgress: 0,
     calibrationRemainingSeconds: 0,
-    calibrationResult: null,
+    calibrationResult: storedCalibration,
+    activeCalibration: storedCalibration,
 
     startCalibration: (durationOverride) => {
       const state = get();
@@ -719,57 +1381,77 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         return;
       }
 
-      const durationSec = durationOverride ?? state.calibrationDurationSeconds;
-      calibrationFrames = [];
-      const startedAt = Date.now();
-      const totalMs = durationSec * 1000;
+      const beginCountdown = () => {
+        const current = get();
+        if (current.isCalibrating) return;
+        const durationSec = durationOverride ?? current.calibrationDurationSeconds;
+        calibrationFrames = [];
+        const startedAt = Date.now();
+        const totalMs = durationSec * 1000;
 
-      if (calibrationTimer) {
-        clearInterval(calibrationTimer);
+        if (calibrationTimer) {
+          clearInterval(calibrationTimer);
+        }
+
+        set({
+          isCalibrating: true,
+          calibrationDurationSeconds: durationSec,
+          calibrationProgress: 0,
+          calibrationRemainingSeconds: durationSec,
+          calibrationResult: null,
+        });
+
+        calibrationTimer = setInterval(() => {
+          if (!get().isCalibrating) {
+            if (calibrationTimer) clearInterval(calibrationTimer);
+            calibrationTimer = null;
+            return;
+          }
+
+          const elapsedMs = Date.now() - startedAt;
+          const progress = Math.min(100, Math.round((elapsedMs / totalMs) * 100));
+          const remainingSec = Math.max(0, Math.ceil((totalMs - elapsedMs) / 1000));
+
+          if (elapsedMs >= totalMs) {
+            if (calibrationTimer) clearInterval(calibrationTimer);
+            calibrationTimer = null;
+            const stateAfter = get();
+            const result: CalibrationResult = {
+              ...BiofeedbackEngine.calibrateBaseline(calibrationFrames, stateAfter.settings.mode),
+              deviceSource: stateAfter.settings.deviceSource,
+              calibratedAt: new Date().toISOString(),
+            };
+            calibrationFrames = [];
+            set({
+              isCalibrating: false,
+              calibrationProgress: 100,
+              calibrationRemainingSeconds: 0,
+              calibrationResult: result,
+            });
+          } else {
+            set({
+              calibrationProgress: progress,
+              calibrationRemainingSeconds: remainingSec,
+            });
+          }
+        }, 200);
+      };
+
+      if (
+        state.settings.deviceSource === 'bluetooth' &&
+        state.deviceStatus.connected &&
+        state.deviceStatus.streamMode !== 'signal'
+      ) {
+        void get()
+          .startEegStreamFromFitCheck()
+          .then(beginCountdown)
+          .catch(() => {
+            // Notice already displayed by startEegStreamFromFitCheck
+          });
+        return;
       }
 
-      set({
-        isCalibrating: true,
-        calibrationDurationSeconds: durationSec,
-        calibrationProgress: 0,
-        calibrationRemainingSeconds: durationSec,
-        calibrationResult: null,
-      });
-
-      calibrationTimer = setInterval(() => {
-        if (!get().isCalibrating) {
-          if (calibrationTimer) clearInterval(calibrationTimer);
-          calibrationTimer = null;
-          return;
-        }
-
-        const elapsedMs = Date.now() - startedAt;
-        const progress = Math.min(100, Math.round((elapsedMs / totalMs) * 100));
-        const remainingSec = Math.max(0, Math.ceil((totalMs - elapsedMs) / 1000));
-
-        if (elapsedMs >= totalMs) {
-          if (calibrationTimer) clearInterval(calibrationTimer);
-          calibrationTimer = null;
-          const stateAfter = get();
-          const result: CalibrationResult = {
-            ...BiofeedbackEngine.calibrateBaseline(calibrationFrames, stateAfter.settings.mode),
-            deviceSource: stateAfter.settings.deviceSource,
-            calibratedAt: new Date().toISOString(),
-          };
-          calibrationFrames = [];
-          set({
-            isCalibrating: false,
-            calibrationProgress: 100,
-            calibrationRemainingSeconds: 0,
-            calibrationResult: result,
-          });
-        } else {
-          set({
-            calibrationProgress: progress,
-            calibrationRemainingSeconds: remainingSec,
-          });
-        }
-      }, 200);
+      beginCountdown();
     },
 
     cancelCalibration: () => {
@@ -787,9 +1469,109 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     applyCalibration: () => {
       const { calibrationResult, updateSettings } = get();
-      if (calibrationResult && (calibrationResult.sampleCount ?? 1) > 0) {
+      if (
+        calibrationResult &&
+        (calibrationResult.sampleCount ?? 0) >= 20 &&
+        calibrationResult.confidence > 0
+      ) {
+        simulationEngine.setPersonalCalibration(calibrationResult);
+        savePersistedCalibration(calibrationResult);
         updateSettings({ threshold: calibrationResult.recommendedThreshold });
+        set({ activeCalibration: calibrationResult });
       }
+    },
+
+    recording: null,
+    recordingStatus: 'empty',
+    recordingProgress: 0,
+    recordingSpeed: 1,
+    recordingError: null,
+    loadRecording: (text, name) => {
+      try {
+        if (get().recordingStatus === 'playing' || get().recordingStatus === 'paused') {
+          get().stopRecording();
+        }
+        const recording = parseEEGRecording(text, name);
+        playback.load(recording);
+        set({ recording, recordingStatus: 'ready', recordingProgress: 0, recordingError: null });
+      } catch (error) {
+        playback.stop();
+        restoreSimulatorAfterPlayback();
+        set({
+          recording: null,
+          recordingStatus: 'empty',
+          recordingProgress: 0,
+          recordingError: error instanceof Error ? error.message : 'Could not open the recording.',
+        });
+      }
+    },
+    playRecording: () => {
+      const state = get();
+      if (!state.recording) return;
+      if (state.settings.deviceSource !== 'simulator') {
+        set({
+          recordingError: 'Select Simulator in the BrainBit & Simulator tab to play a recording.',
+        });
+        return;
+      }
+      if (simulatorWasPausedBeforePlayback === null) {
+        simulatorWasPausedBeforePlayback = simulationEngine.getIsPaused();
+        if (!simulatorWasPausedBeforePlayback) simulationEngine.togglePause();
+      }
+      if (state.recordingStatus !== 'paused') {
+        simulationEngine.resetRecordedSignalPipeline();
+      }
+      simulationEngine.setRecordingPlaybackActive(true);
+      set({ recordingStatus: 'playing', recordingError: null });
+      const started = playback.play(
+        state.recordingSpeed,
+        (frames) => {
+          simulationEngine.ingestRecordedFrames(frames);
+        },
+        (progress) => {
+          set({ recordingProgress: progress });
+        },
+        () => {
+          set({ recordingStatus: 'ended', recordingProgress: 1 });
+          restoreSimulatorAfterPlayback();
+        }
+      );
+      if (!started) {
+        restoreSimulatorAfterPlayback();
+        set({ recordingStatus: 'ready' });
+      }
+    },
+    pauseRecording: () => {
+      playback.pause();
+      if (get().recordingStatus === 'playing') set({ recordingStatus: 'paused' });
+    },
+    stopRecording: () => {
+      playback.stop();
+      simulationEngine.resetRecordedSignalPipeline();
+      restoreSimulatorAfterPlayback();
+      set({
+        recordingStatus: get().recording ? 'ready' : 'empty',
+        recordingProgress: 0,
+        recordingError: null,
+      });
+    },
+    seekRecording: (progress) => {
+      const wasPlaying = get().recordingStatus === 'playing';
+      if (wasPlaying) playback.pause();
+      const nextProgress = playback.seek(progress);
+      simulationEngine.resetRecordedSignalPipeline();
+      set({
+        recordingProgress: nextProgress,
+        ...(wasPlaying ? { recordingStatus: 'paused' as const } : {}),
+      });
+      if (wasPlaying) get().playRecording();
+    },
+    setRecordingSpeed: (speed) => {
+      const wasPlaying = get().recordingStatus === 'playing';
+      const boundedSpeed = Math.max(0.25, Math.min(4, speed));
+      if (wasPlaying) playback.pause();
+      set({ recordingSpeed: boundedSpeed });
+      if (wasPlaying) get().playRecording();
     },
   };
 });

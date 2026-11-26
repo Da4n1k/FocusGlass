@@ -3,14 +3,36 @@ name = "focusglass"
 version = "1.0.0"
 description = "FocusGlass Biofeedback Ambient Overlay"
 authors = ["FocusGlass Team"]
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
 tauri = { version = "2.0", features = ["tray-icon"] }
-tauri-plugin-shell = "2.0"
 tauri-plugin-global-shortcut = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+thiserror = "2.0"
+crossbeam-channel = "0.5"
+libloading = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Already pulled in by tauri/wry; used directly to ask GDK whether the screen is composited.
+gtk = "0.18"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+] }

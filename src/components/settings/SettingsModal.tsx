@@ -10,12 +10,16 @@ import {
   Keyboard,
   Info,
   AlertTriangle,
+  Waves,
+  ShieldCheck,
 } from 'lucide-react';
 import { useFocusStore } from '../../stores/useFocusStore';
 import { GlassPanel } from '../glass/GlassPanel';
 import { GlassButton } from '../glass/GlassButton';
 import { BiofeedbackConfig } from './BiofeedbackConfig';
 import { DeviceSelector } from './DeviceSelector';
+import { EEGRecordingPlayer } from './EEGRecordingPlayer';
+import { SignalQualityGuide } from './SignalQualityGuide';
 
 export const SettingsModal: React.FC = () => {
   const {
@@ -29,12 +33,13 @@ export const SettingsModal: React.FC = () => {
     calibrationProgress,
     calibrationRemainingSeconds,
     calibrationResult,
+    activeCalibration,
     startCalibration,
     cancelCalibration,
     applyCalibration,
   } = useFocusStore();
 
-  const [activeTab, setActiveTab] = useState<'bci' | 'device' | 'calibration' | 'hotkeys'>('bci');
+  const [activeTab, setActiveTab] = useState<'bci' | 'device' | 'calibration' | 'recording' | 'quality' | 'hotkeys'>('bci');
 
   if (!isSettingsOpen) return null;
 
@@ -87,6 +92,16 @@ export const SettingsModal: React.FC = () => {
               icon: <Gauge className="w-3.5 h-3.5" />,
             },
             {
+              id: 'recording' as const,
+              label: 'EEG Recording Player',
+              icon: <Waves className="w-3.5 h-3.5" />,
+            },
+            {
+              id: 'quality' as const,
+              label: 'Signal Quality',
+              icon: <ShieldCheck className="w-3.5 h-3.5" />,
+            },
+            {
               id: 'hotkeys' as const,
               label: 'Demo Shortcuts',
               icon: <Keyboard className="w-3.5 h-3.5" />,
@@ -112,6 +127,10 @@ export const SettingsModal: React.FC = () => {
           {activeTab === 'bci' && <BiofeedbackConfig />}
 
           {activeTab === 'device' && <DeviceSelector />}
+
+          {activeTab === 'recording' && <EEGRecordingPlayer />}
+
+          {activeTab === 'quality' && <SignalQualityGuide />}
 
           {activeTab === 'calibration' && (
             <div className="space-y-4">
@@ -145,10 +164,17 @@ export const SettingsModal: React.FC = () => {
                 </div>
 
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  Records clean 250 Hz telemetry frames (excluding EOG/EMG artifacts and lost
-                  contact intervals) to estimate personal mean and standard deviation for the
-                  selected training mode.
+                  Only clean frames with contact on all four electrodes are included. The reference uses robust medians from both halves of the trial, weighting the later half at 65% so the estimate reflects the user's current state and fatigue. Spread uses 1.4826 × MAD rather than outlier-sensitive standard deviation.
                 </p>
+                <div className="rounded-lg border border-cyan-400/15 bg-cyan-500/5 p-3 text-[11px] leading-relaxed text-slate-300">
+                  <span className="font-semibold text-cyan-200">Baseline = 0:</span> deviation = clamp((metric − personal baseline) / (2.5 × robust spread) × 100, −100…+100). The 0…100% score is (deviation + 100) / 2, so the baseline maps to 0 deviation and 50%. Output is clamped so isolated peaks cannot distort the scale.
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-white/5 bg-black/20 px-3 py-2 text-[10px]">
+                  <span className="text-slate-400">Active personal baseline</span>
+                  <span className={activeCalibration ? 'font-medium text-emerald-300' : 'text-slate-500'}>
+                    {activeCalibration ? `Applied · ${activeCalibration.mode === 'relaxation' ? 'calm' : 'focus'}` : 'Not applied'}
+                  </span>
+                </div>
 
                 {!isStreamReady && (
                   <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 flex items-center gap-2">
@@ -188,17 +214,16 @@ export const SettingsModal: React.FC = () => {
                     <div className="flex items-center justify-between text-xs">
                       <span className="flex items-center gap-2 text-emerald-400 font-semibold">
                         <CheckCircle className="w-4 h-4" />
-                        {(calibrationResult.sampleCount ?? 0) > 0
+                        {(calibrationResult.sampleCount ?? 0) >= 20 && calibrationResult.confidence > 0
                           ? 'Baseline Computed'
                           : 'Insufficient Clean Signal'}
                       </span>
                       <span className="text-[11px] font-mono text-slate-400">
-                        Clean samples: {calibrationResult.sampleCount ?? 0} · Confidence:{' '}
-                        {Math.round(calibrationResult.confidence * 100)}%
+                        Clean frames: {calibrationResult.sampleCount ?? 0} · Valid: {Math.round((calibrationResult.validSampleRatio ?? 0) * 100)}% · Confidence: {Math.round(calibrationResult.confidence * 100)}%
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                    <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
                       <div className="p-2 rounded-lg bg-black/30 border border-white/10">
                         <span className="text-slate-400 block text-[10px]">Baseline Focus</span>
                         <span className="font-mono text-white font-bold">
@@ -212,8 +237,14 @@ export const SettingsModal: React.FC = () => {
                         </span>
                       </div>
                       <div className="p-2 rounded-lg bg-black/30 border border-white/10">
+                        <span className="text-slate-400 block text-[10px]">Focus drift · fatigue proxy</span>
+                        <span className={`font-mono font-bold ${calibrationResult.fatigueDrift < 0 ? 'text-amber-300' : 'text-slate-200'}`}>
+                          {calibrationResult.fatigueDrift > 0 ? '+' : ''}{calibrationResult.fatigueDrift} pts
+                        </span>
+                      </div>
+                      <div className="p-2 rounded-lg bg-black/30 border border-white/10">
                         <span className="text-slate-400 block text-[10px]">
-                          Recommended Cutoff
+                          Recommended raw cutoff
                         </span>
                         <span className="font-mono text-[#FF6600] font-bold">
                           {calibrationResult.recommendedThreshold}%
@@ -233,10 +264,10 @@ export const SettingsModal: React.FC = () => {
                       <GlassButton
                         size="sm"
                         variant="primary"
-                        disabled={(calibrationResult.sampleCount ?? 0) === 0}
+                        disabled={(calibrationResult.sampleCount ?? 0) < 20 || calibrationResult.confidence <= 0}
                         onClick={() => applyCalibration()}
                       >
-                        Apply Threshold ({calibrationResult.recommendedThreshold}%)
+                        Apply baseline & cutoff ({calibrationResult.recommendedThreshold}%)
                       </GlassButton>
                     </div>
                   </div>
