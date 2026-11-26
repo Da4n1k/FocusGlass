@@ -106,7 +106,7 @@ export const SessionHistoryCard: React.FC = () => {
             size="sm"
             variant="secondary"
             disabled={!canExportCsv}
-            onClick={exportSessionsCsv}
+            onClick={() => exportSessionsCsv()}
             icon={<FileSpreadsheet className="w-3.5 h-3.5" />}
             title="Session summaries (history + active session) as CSV"
           >

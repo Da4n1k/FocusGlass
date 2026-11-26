@@ -201,17 +201,59 @@ test('Store Integration: useFocusStore propagates settings to live engine and re
   simulationEngine.stepSamples(12);
   assert.strictEqual(store.getState().feedbackState.overlayOpacity, 0, 'Store threshold update reached engine');
 
-  // Switch to bluetooth without hardware -> deviceStatus must report connected = false
+  // Switch to bluetooth without hardware -> deviceStatus must report connected = false and start cleanly from 0
   store.getState().updateSettings({ deviceSource: 'bluetooth' });
   await new Promise((r) => setTimeout(r, 15));
   assert.strictEqual(store.getState().deviceStatus.deviceSource, 'bluetooth');
   assert.strictEqual(store.getState().deviceStatus.connected, false, 'Unlinked BLE must not fake connected=true');
   assert.strictEqual(store.getState().feedbackState.overlayOpacity, 0, 'Overlay cleared when BLE disconnected');
+  assert.strictEqual(store.getState().focusTimeline.length, 0, 'Switching to real headband clears demo curve');
+  assert.strictEqual(store.getState().feedbackState.smoothedMetric, 0, 'Metric starts at 0 in real headband mode');
+  assert.strictEqual(store.getState().sessionStats.durationSeconds, 0, 'Duration starts at 0 in real headband mode');
 
-  // Return to simulator and verify session reset
+  store.getState().startNewSession();
+  assert.strictEqual(store.getState().focusTimeline.length, 0, 'New session in bluetooth mode starts with empty timeline');
+
+  // Return to simulator and verify demo curve + session reset
   store.getState().updateSettings({ deviceSource: 'simulator' });
+  assert.ok(store.getState().focusTimeline.length > 0, 'Simulator mode retains initial demo preview curve');
   simulationEngine.stepSamples(250);
   assert.ok(store.getState().sessionStats.durationSeconds >= 0.9);
   store.getState().resetSession(false);
   assert.strictEqual(store.getState().sessionStats.durationSeconds, 0);
+});
+
+test('Store Integration: feedbackStyle, artifactFilterEnabled, and timed pause behave cleanly', () => {
+  simulationEngine.stop();
+  const store = useFocusStore;
+
+  store.getState().setFeedbackStyle('blur');
+  assert.strictEqual(store.getState().feedbackStyle, 'blur');
+  assert.strictEqual(store.getState().settings.feedbackStyle, 'blur');
+
+  store.getState().updateSettings({ artifactFilterEnabled: false });
+  assert.strictEqual(store.getState().settings.artifactFilterEnabled, false);
+
+  const engine = new BiofeedbackEngine({
+    threshold: 60,
+    sensitivitySeconds: 0.001,
+    artifactFilterEnabled: false,
+  });
+  const unfilteredArtifact = engine.processTelemetry({
+    timestamp: 1000,
+    rawChannels: { t3: 150, t4: 150, o1: 20, o2: 20 },
+    concentration: 20,
+    relaxation: 50,
+    signalQuality: { t3: true, t4: true, o1: true, o2: true },
+    isArtifact: true,
+  });
+  assert.strictEqual(unfilteredArtifact.isArtifactFrozen, false);
+  assert.ok(unfilteredArtifact.overlayOpacity > 0);
+
+  store.getState().pauseForMinutes(5);
+  assert.strictEqual(store.getState().isPaused, true);
+  store.getState().togglePause();
+  assert.strictEqual(store.getState().isPaused, false);
+
+  store.getState().updateSettings({ artifactFilterEnabled: true, feedbackStyle: 'dimming' });
 });

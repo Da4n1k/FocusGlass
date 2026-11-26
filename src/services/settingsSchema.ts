@@ -25,6 +25,8 @@ export const DEFAULT_SETTINGS: FocusGlassSettings = {
   audioVolume: 1.0,
   invertReaction: false,
   glassOpacity: 0.85,
+  feedbackStyle: 'dimming',
+  artifactFilterEnabled: true,
 };
 
 type NumericSettingKey =
@@ -67,6 +69,8 @@ const OVERLAY_MODES = [
   'distractors',
 ] as const;
 
+const FEEDBACK_STYLES = ['dimming', 'blur', 'distracting_only'] as const;
+
 /**
  * Builds a valid FocusGlassSettings from untrusted input (localStorage, IPC, partial updates).
  * Every field is validated independently: out-of-range numbers are clamped, while values of
@@ -85,17 +89,46 @@ export function sanitizeSettings(
     typeof src.overlayMode === 'string' &&
     (OVERLAY_MODES as readonly string[]).includes(src.overlayMode);
   const hasExplicitScope = src.dimmingScope === 'fullscreen' || src.dimmingScope === 'distractors';
+  const hasExplicitFeedbackStyle =
+    typeof src.feedbackStyle === 'string' &&
+    (FEEDBACK_STYLES as readonly string[]).includes(src.feedbackStyle);
 
   let overlayMode = pickEnum(src.overlayMode, OVERLAY_MODES, base.overlayMode);
   let dimmingScope = pickEnum(src.dimmingScope, ['fullscreen', 'distractors'] as const, base.dimmingScope);
+  let feedbackStyle = pickEnum(
+    src.feedbackStyle,
+    FEEDBACK_STYLES,
+    base.feedbackStyle ?? 'dimming'
+  );
 
   if (hasExplicitOverlayMode) {
     dimmingScope = overlayMode === 'distractors' ? 'distractors' : 'fullscreen';
+    if (!hasExplicitFeedbackStyle) {
+      feedbackStyle =
+        overlayMode === 'distractors'
+          ? 'distracting_only'
+          : overlayMode === 'fullscreen_dim'
+            ? 'dimming'
+            : 'blur';
+    }
+  } else if (hasExplicitFeedbackStyle) {
+    if (feedbackStyle === 'distracting_only') {
+      overlayMode = 'distractors';
+      dimmingScope = 'distractors';
+    } else if (feedbackStyle === 'blur') {
+      overlayMode = 'vignette_blur';
+      dimmingScope = 'fullscreen';
+    } else {
+      overlayMode = 'fullscreen_dim';
+      dimmingScope = 'fullscreen';
+    }
   } else if (hasExplicitScope) {
     if (dimmingScope === 'distractors') {
       overlayMode = 'distractors';
+      feedbackStyle = 'distracting_only';
     } else if (overlayMode === 'distractors') {
       overlayMode = 'fullscreen_dim';
+      feedbackStyle = 'dimming';
     }
   } else {
     dimmingScope = overlayMode === 'distractors' ? 'distractors' : 'fullscreen';
@@ -116,6 +149,11 @@ export function sanitizeSettings(
         : base.audioFeedbackEnabled,
     invertReaction:
       typeof src.invertReaction === 'boolean' ? src.invertReaction : base.invertReaction,
+    feedbackStyle,
+    artifactFilterEnabled:
+      typeof src.artifactFilterEnabled === 'boolean'
+        ? src.artifactFilterEnabled
+        : (base.artifactFilterEnabled ?? true),
   };
 
   for (const key of NUMERIC_KEYS) {

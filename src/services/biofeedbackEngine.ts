@@ -164,12 +164,14 @@ export class BiofeedbackEngine {
 
     if (telemetry.isArtifact) {
       this.sessionStats.artifactCount++;
-      this.lastState = {
-        ...this.lastState,
-        isArtifactFrozen: true,
-        isContactOk,
-      };
-      return this.lastState;
+      if (this.settings.artifactFilterEnabled !== false) {
+        this.lastState = {
+          ...this.lastState,
+          isArtifactFrozen: true,
+          isContactOk,
+        };
+        return this.lastState;
+      }
     }
 
     if (!isContactOk) {

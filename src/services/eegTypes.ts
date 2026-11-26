@@ -48,6 +48,8 @@ export interface EEGTelemetry {
   isArtifact: boolean;   // EMG / EOG artifact flag
 }
 
+export type FeedbackStyle = 'dimming' | 'blur' | 'distracting_only';
+
 /** What the overlay darkens: the whole screen or only distracting foreground windows. */
 export type DimmingScope = 'fullscreen' | 'distractors';
 
@@ -78,6 +80,8 @@ export interface FocusGlassSettings {
   audioVolume: number;           // Master volume of audio feedback [0.0, 1.0] (default: 1.0)
   invertReaction: boolean;       // Dim when the metric rises ABOVE the threshold instead of below it
   glassOpacity: number;          // UI panel translucency [0.1, 1.0] (default: 0.85)
+  feedbackStyle?: FeedbackStyle; // Visual feedback presentation mode
+  artifactFilterEnabled?: boolean; // Freeze biofeedback opacity during EMG/EOG bursts
 }
 
 export interface BiofeedbackFeedbackState {
@@ -186,6 +190,13 @@ export interface SessionStatistics {
   artifactCount: number;
 }
 
+export interface FocusTimelinePoint {
+  time: string;
+  timestamp: number;
+  focus: number;
+  isDip: boolean;
+}
+
 export interface SessionRecord extends SessionStatistics {
   id: string;
   startedAt: string;
@@ -193,6 +204,7 @@ export interface SessionRecord extends SessionStatistics {
   mode: 'concentration' | 'relaxation';
   deviceSource: 'simulator' | 'bluetooth';
   threshold: number;
+  timeline?: FocusTimelinePoint[];
 }
 
 export interface CalibrationResult {
@@ -210,6 +222,8 @@ export interface CalibrationResult {
   validSampleRatio: number;
   mode?: 'concentration' | 'relaxation';
   sampleCount?: number;
+  deviceSource?: 'simulator' | 'bluetooth';
+  calibratedAt?: string;
 }
 
 /** Rectangle in physical pixels. */

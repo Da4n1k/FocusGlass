@@ -361,6 +361,17 @@ class TauriBridge {
     return this.on<EEGTelemetry>('brainbit-telemetry', handler);
   }
 
+  public async toggleMaximizeWindow(): Promise<void> {
+    if (this.isTauri()) {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        await getCurrentWindow().toggleMaximize();
+      } catch (err) {
+        console.warn('[TauriBridge] Error toggling maximize:', err);
+      }
+    }
+  }
+
   public onBrainBitRawSignal(handler: (packet: RawBrainBitPacket) => void): Promise<() => void> {
     return this.on<RawBrainBitPacket>('brainbit-raw-signal', handler);
   }
