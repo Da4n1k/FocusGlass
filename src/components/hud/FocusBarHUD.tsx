@@ -22,18 +22,19 @@ export const FocusBarHUD: React.FC = () => {
   const isStreamActive = isSimulator || deviceStatus.connected;
   const hasSignalData = isSimulator || deviceStatus.connected || sessionStats.durationSeconds > 0;
 
-  const currentMetric = isSimulator
-    ? Math.round(feedbackState.smoothedMetric) || 78
-    : hasSignalData
-      ? Math.round(feedbackState.smoothedMetric)
-      : 0;
+  const currentMetric = hasSignalData ? Math.round(feedbackState.smoothedMetric) : 0;
   const threshold = settings.threshold;
   const isBelowThreshold = isStreamActive && feedbackState.isContactOk && currentMetric < threshold;
 
-  const quality = telemetry?.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
-  const activeSensorsCount = isSimulator || deviceStatus.connected
+  const quality = telemetry?.signalQuality ?? {
+    t3: isSimulator,
+    t4: isSimulator,
+    o1: isSimulator,
+    o2: isSimulator,
+  };
+  const activeSensorsCount = isStreamActive
     ? [quality.t3, quality.t4, quality.o1, quality.o2].filter(Boolean).length
-    : 4;
+    : 0;
 
   const formatTime = (totalSeconds: number) => {
     const mins = Math.floor(totalSeconds / 60);
@@ -150,21 +151,19 @@ export const FocusBarHUD: React.FC = () => {
             >
               {!hasSignalData
                 ? 'Ожидание BrainBit'
-                : isBelowThreshold
-                  ? 'Фокус ниже порога'
-                  : 'Внимание в норме'}
+                : !feedbackState.isContactOk
+                  ? 'Потеря контакта датчиков'
+                  : isBelowThreshold
+                    ? isConcentration
+                      ? 'Фокус ниже порога'
+                      : 'Спокойствие ниже порога'
+                    : isConcentration
+                      ? 'Внимание в норме'
+                      : 'Спокойствие в норме'}
             </div>
             {/* Subtitle */}
             <div className="text-[12px] text-[#A3ACC2] truncate mt-1 leading-tight font-normal">
-              Сессия{' '}
-              {formatTime(
-                isSimulator
-                  ? sessionStats.durationSeconds > 0
-                    ? sessionStats.durationSeconds
-                    : 1458
-                  : sessionStats.durationSeconds
-              )}{' '}
-              · порог {threshold}%
+              Сессия {formatTime(sessionStats.durationSeconds)} · порог {threshold}%
             </div>
           </div>
         </div>
@@ -190,10 +189,24 @@ export const FocusBarHUD: React.FC = () => {
         {/* Row 4: Bottom Status Line */}
         <div className="flex items-center justify-between text-[12px] text-[#A3ACC2]">
           <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-[#34D399] shadow-[0_0_0_3px_rgba(52,211,153,0.18)] shrink-0" />
+            <span
+              className={`w-2 h-2 rounded-full shrink-0 ${
+                !isStreamActive
+                  ? 'bg-[#F87171] shadow-[0_0_0_3px_rgba(248,113,113,0.18)]'
+                  : feedbackState.isContactOk
+                    ? 'bg-[#34D399] shadow-[0_0_0_3px_rgba(52,211,153,0.18)]'
+                    : 'bg-[#FBBF24] shadow-[0_0_0_3px_rgba(251,191,36,0.18)]'
+              }`}
+            />
             <span>Датчики {activeSensorsCount}/4</span>
             <span className="text-[#3A4560] font-normal mx-1">·</span>
-            <span>Затемнение</span>
+            <span>
+              {isPaused
+                ? 'Пауза'
+                : feedbackState.isDimmingActive
+                  ? 'Затемнение активно'
+                  : 'Экран чист'}
+            </span>
           </div>
 
           <button

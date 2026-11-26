@@ -60,26 +60,35 @@ export const BiofeedbackOverlay: React.FC = () => {
     deviceStatus,
     activeNav,
     isSessionEnded,
+    isPaused,
     isGentleAlertDismissed,
     dismissGentleAlert,
-    togglePause,
+    pauseForMinutes,
+    feedbackStyle,
   } = useFocusStore();
 
   const { overlayOpacity, blurRadius, isDimmingActive, isContactOk, smoothedMetric } =
     feedbackState;
   const isStreamActive = settings.deviceSource === 'simulator' || deviceStatus.connected;
+  const activeFeedbackStyle = settings.feedbackStyle ?? feedbackStyle;
 
   const canDim =
+    !isPaused &&
     !isSessionEnded &&
     activeNav !== 'summary' &&
     activeNav !== 'onboarding' &&
     isStreamActive &&
     isContactOk &&
     isDimmingActive;
-  const displayOpacity = canDim ? overlayOpacity : 0;
-  const displayBlur = canDim ? blurRadius : 0;
+  const displayOpacity = canDim
+    ? activeFeedbackStyle === 'blur'
+      ? Math.min(overlayOpacity, 0.22)
+      : overlayOpacity
+    : 0;
+  const displayBlur = canDim && activeFeedbackStyle === 'blur' ? blurRadius : 0;
 
   const currentVal = Math.round(smoothedMetric);
+  const isConcentration = settings.mode === 'concentration';
 
   return (
     <div
@@ -112,13 +121,16 @@ export const BiofeedbackOverlay: React.FC = () => {
           <div className="flex-1 min-w-0">
             {/* Title: 17px SemiBold in #EEF1F8 */}
             <h4 className="text-[17px] font-semibold text-[#EEF1F8] leading-tight">
-              Внимание снизилось до {currentVal}%
+              {isConcentration
+                ? `Внимание снизилось до ${currentVal}%`
+                : `Спокойствие снизилось до ${currentVal}%`}
             </h4>
 
             {/* Description: 14px Regular in #A3ACC2, leading-20 */}
             <p className="text-[14px] text-[#A3ACC2] leading-[20px] mt-1 font-normal">
-              Вернитесь к задаче или сделайте короткую паузу. Экран прояснится сам, когда фокус
-              восстановится.
+              {isConcentration
+                ? 'Вернитесь к задаче или сделайте короткую паузу. Экран прояснится сам, когда фокус восстановится.'
+                : 'Сделайте глубокий вдох и расслабьте плечи. Экран прояснится сам, когда спокойствие восстановится.'}
             </p>
 
             {/* Buttons Row: Aligned to start (text alignment), pt-3.5 */}
@@ -126,7 +138,7 @@ export const BiofeedbackOverlay: React.FC = () => {
               {/* Button: Пауза 5 минут */}
               <button
                 onClick={() => {
-                  togglePause();
+                  pauseForMinutes(5);
                   dismissGentleAlert();
                 }}
                 className="h-[36px] px-3.5 rounded-[10px] bg-[#1F2840] hover:bg-[#283556] border border-white/[0.08] text-[14px] font-semibold text-[#EEF1F8] flex items-center gap-2 transition-colors cursor-pointer"

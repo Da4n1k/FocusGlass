@@ -146,9 +146,9 @@ export const SettingsScreen: React.FC = () => {
   } = useFocusStore();
 
   const [savedToast, setSavedToast] = useState(false);
-  const [dimOnlyTextApps, setDimOnlyTextApps] = useState(true);
 
   const handleSave = () => {
+    updateSettings({ ...settings });
     setSavedToast(true);
     setTimeout(() => setSavedToast(false), 2000);
   };
@@ -156,7 +156,7 @@ export const SettingsScreen: React.FC = () => {
   const handleReset = () => {
     updateSettings({ ...DEFAULT_SETTINGS });
     setFeedbackStyle('dimming');
-    void setClickThrough(true);
+    void setClickThrough(false);
   };
 
   const tabs = [
@@ -186,7 +186,7 @@ export const SettingsScreen: React.FC = () => {
     {
       id: 'distracting_only' as const,
       title: 'Только отвлекающие окна',
-      desc: 'Тускнеют соцсети и мессенджеры, рабочее окно остаётся чётким',
+      desc: 'В разработке (Win32-хук): пока работает как плавное затемнение',
       Icon: DistractingWindowModeIcon,
       color: '#9B8CFF',
       activeBg: 'rgba(155, 140, 255, 0.08)',
@@ -195,9 +195,10 @@ export const SettingsScreen: React.FC = () => {
 
   const dimPct = Math.round(settings.dimmingMaxOpacity * 100);
   const sensitivityVal = Math.max(1, Math.min(10, Math.round(settings.sensitivitySeconds)));
-  const thresholdVal = Math.max(30, Math.min(90, Math.round(settings.threshold)));
+  const thresholdVal = Math.max(10, Math.min(95, Math.round(settings.threshold)));
   const glassOpacityPct = Math.round(settings.glassOpacity * 100);
-  const blurRadiusVal = Math.max(4, Math.min(32, Math.round(settings.blurRadius)));
+  const blurRadiusVal = Math.max(0, Math.min(32, Math.round(settings.blurRadius)));
+  const artifactFilterEnabled = settings.artifactFilterEnabled ?? true;
 
   return (
     <div className="w-full min-h-full flex flex-col justify-between pt-7 px-8 pb-6 animate-in fade-in duration-200">
@@ -408,13 +409,13 @@ export const SettingsScreen: React.FC = () => {
                 <div className="flex items-center gap-4 shrink-0">
                   <input
                     type="range"
-                    min={30}
-                    max={90}
+                    min={10}
+                    max={95}
                     value={thresholdVal}
                     onChange={(e) => updateSettings({ threshold: Number(e.target.value) })}
                     aria-label="Базовый порог концентрации"
                     className="figma-slider w-[200px]"
-                    style={{ background: sliderBackground(thresholdVal, 30, 90) }}
+                    style={{ background: sliderBackground(thresholdVal, 10, 95) }}
                   />
                   <span className="text-[15px] font-bold text-[#EEF1F8] tabular-nums w-12 text-right">
                     {thresholdVal}%
@@ -428,20 +429,20 @@ export const SettingsScreen: React.FC = () => {
                     Интенсивность размытия
                   </div>
                   <div className="text-[13px] text-[#A3ACC2] mt-0.5">
-                    сила эффекта blur в режиме «Размытие»
+                    сила эффекта blur в режиме «Размытие» (0 — выкл.)
                   </div>
                 </div>
                 <div className="flex items-center gap-4 shrink-0">
                   <input
                     type="range"
-                    min={4}
+                    min={0}
                     max={32}
                     step={2}
                     value={blurRadiusVal}
                     onChange={(e) => updateSettings({ blurRadius: Number(e.target.value) })}
                     aria-label="Интенсивность размытия"
                     className="figma-slider w-[200px]"
-                    style={{ background: sliderBackground(blurRadiusVal, 4, 32) }}
+                    style={{ background: sliderBackground(blurRadiusVal, 0, 32) }}
                   />
                   <span className="text-[15px] font-bold text-[#EEF1F8] tabular-nums w-12 text-right">
                     {blurRadiusVal} px
@@ -459,8 +460,10 @@ export const SettingsScreen: React.FC = () => {
                   </div>
                 </div>
                 <FigmaToggle
-                  checked={dimOnlyTextApps}
-                  onChange={() => setDimOnlyTextApps(!dimOnlyTextApps)}
+                  checked={artifactFilterEnabled}
+                  onChange={() =>
+                    updateSettings({ artifactFilterEnabled: !artifactFilterEnabled })
+                  }
                   ariaLabel="Фильтр артефактов"
                 />
               </div>
@@ -499,7 +502,7 @@ export const SettingsScreen: React.FC = () => {
         {settingsSubTab === 'sound' && (
           <div className="mt-6">
             <h2 className="text-[16px] font-semibold text-[#EEF1F8] mb-3.5">
-              Аудиообратная связь (Бинауральное сопровождение)
+              Аудиообратная связь (фильтрованный розовый шум)
             </h2>
             <div className="rounded-[20px] bg-[#131A2A] border border-white/[0.06] divide-y divide-white/[0.05] px-6">
               <div className="min-h-[68px] py-3.5 flex items-center justify-between gap-6">
@@ -549,12 +552,14 @@ export const SettingsScreen: React.FC = () => {
             </h2>
             <div className="rounded-[20px] bg-[#131A2A] border border-white/[0.06] divide-y divide-white/[0.05] px-6">
               {[
-                { key: 'Ctrl + Shift + G', label: 'Переключить режим Windowed / Мини-виджет' },
-                { key: 'Ctrl + Shift + D', label: 'Показать / скрыть панель диагностики (Debug Drawer)' },
-                { key: '1', label: 'Пресет: Глубокий фокус (симулятор)' },
-                { key: '2', label: 'Пресет: Рассеивание внимания' },
-                { key: '3', label: 'Пресет: Релаксация (Alpha пик)' },
-                { key: '4', label: 'Инъекция артефакта (моргание / EMG)' },
+                { key: 'Ctrl + Shift + F', label: 'Переключить режим окна / Мини-панель (HUD)' },
+                { key: 'Ctrl + Shift + G', label: 'Аварийный выход из режима сквозного клика (Click-Through)' },
+                { key: '1', label: 'Пресет: Глубокий фокус (~92%, симулятор)' },
+                { key: '2', label: 'Пресет: Рабочий поток (~78%, симулятор)' },
+                { key: '3', label: 'Пресет: Рассеивание внимания (~42%, симулятор)' },
+                { key: '4', label: 'Инъекция артефакта (моргание / ЭМГ ~240 мс, симулятор)' },
+                { key: '5', label: 'Пресет: Медитация / Спокойствие (~94% Alpha, симулятор)' },
+                { key: 'Space', label: 'Пауза / Продолжить поток (симулятор)' },
               ].map((hk) => (
                 <div key={hk.key} className="min-h-[58px] py-3 flex items-center justify-between gap-6">
                   <div className="flex items-center gap-3 min-w-0">

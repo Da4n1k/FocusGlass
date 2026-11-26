@@ -2,6 +2,7 @@ import React from 'react';
 import { useFocusStore } from '../../stores/useFocusStore';
 import { SessionRecord, FocusTimelinePoint } from '../../services/eegTypes';
 import {
+  buildSessionInsightRu,
   computeInFocusPct,
   getDistractionIntervalLabel,
   getFocusDeltaSummary,
@@ -151,6 +152,11 @@ export const SessionSummaryScreen: React.FC = () => {
   const thresholdY =
     chartHeight - paddingY - (activeThreshold / 100) * (chartHeight - paddingY * 2);
 
+  const sessionInsight = React.useMemo(
+    () => buildSessionInsightRu(record, points),
+    [record, points]
+  );
+
   return (
     <div className="w-full h-full pt-7 px-8 pb-4 flex flex-col justify-between select-none animate-in fade-in duration-200">
       <div className="space-y-4">
@@ -170,7 +176,7 @@ export const SessionSummaryScreen: React.FC = () => {
 
           {/* Экспорт CSV */}
           <button
-            onClick={exportSessionsCsv}
+            onClick={() => exportSessionsCsv(record)}
             className="h-[36px] px-[14px] rounded-[10px] bg-transparent hover:bg-white/[0.04] border border-white/[0.12] text-[#C9D1E3] text-[14px] font-semibold flex items-center gap-2 transition-colors cursor-pointer mt-0 shrink-0"
           >
             <svg className="w-[17px] h-[17px] text-[#C9D1E3]" viewBox="0 0 17 17" fill="none">
@@ -318,7 +324,7 @@ export const SessionSummaryScreen: React.FC = () => {
 
                   {/* Dip circles */}
                   {points.map((p: FocusTimelinePoint, i: number) => {
-                    if (!p.isDip) return null;
+                    if (p.focus >= activeThreshold) return null;
                     const { x, y } = getCoord(i, p.focus);
                     return (
                       <circle
@@ -340,7 +346,7 @@ export const SessionSummaryScreen: React.FC = () => {
                   cy={getCoord(0, points[0].focus).y}
                   r="4"
                   fill="#0B0F1A"
-                  stroke={points[0].isDip ? '#FBBF24' : '#FF7A2F'}
+                  stroke={points[0].focus < activeThreshold ? '#FBBF24' : '#FF7A2F'}
                   strokeWidth="2"
                 />
               )}
@@ -373,11 +379,9 @@ export const SessionSummaryScreen: React.FC = () => {
               strokeLinecap="round"
             />
           </svg>
-          <div className="text-[14px] text-[#C9D1E3] truncate">
+          <div className="text-[14px] text-[#C9D1E3] truncate" title={sessionInsight}>
             <span className="font-semibold text-[#C9D1E3]">Наблюдение: </span>
-            <span className="font-normal text-[#C9D1E3]">
-              лучше всего вы держали фокус первые 20 минут. Попробуйте делать короткий перерыв каждые 25–30 минут.
-            </span>
+            <span className="font-normal text-[#C9D1E3]">{sessionInsight}</span>
           </div>
         </div>
       </div>

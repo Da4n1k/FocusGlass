@@ -1,4 +1,4 @@
-import type { SessionRecord } from './eegTypes';
+import type { FocusTimelinePoint, SessionRecord } from './eegTypes';
 
 export interface FocusDeltaSummary {
   text: string;
@@ -98,4 +98,46 @@ export function getDistractionIntervalLabel(
 
   const avgHours = Math.round(avgMinutes / 60);
   return `в среднем раз в ${avgHours} ч`;
+}
+
+/**
+ * Generates a data-driven Russian insight from session metrics and timeline.
+ */
+export function buildSessionInsightRu(
+  record: SessionRecord,
+  points: FocusTimelinePoint[]
+): string {
+  const isCalmMode = record.mode === 'relaxation';
+  const metricNoun = isCalmMode ? 'спокойствие' : 'фокус';
+  const inFocusPct = computeInFocusPct(record.timeInFocusSeconds, record.durationSeconds);
+
+  if (record.durationSeconds < 30) {
+    return `Короткая сессия (${Math.max(1, Math.round(record.durationSeconds))} сек) со средним показателем ${Math.round(record.averageFocusScore)}%. Для более точной динамики попробуйте поработать от 10 минут.`;
+  }
+
+  if (points.length >= 6) {
+    const mid = Math.floor(points.length / 2);
+    const firstHalfAvg =
+      points.slice(0, mid).reduce((acc, p) => acc + p.focus, 0) / Math.max(1, mid);
+    const secondHalfAvg =
+      points.slice(mid).reduce((acc, p) => acc + p.focus, 0) / Math.max(1, points.length - mid);
+    const halfDiff = firstHalfAvg - secondHalfAvg;
+
+    if (halfDiff >= 8) {
+      return `лучше всего вы держали ${metricNoun} в первой половине сессии (${Math.round(firstHalfAvg)}% против ${Math.round(secondHalfAvg)}%). Короткий перерыв каждые 25–30 минут поможет избежать спада.`;
+    }
+    if (halfDiff <= -8) {
+      return `во второй половине сессии ${metricNoun} выросло с ${Math.round(firstHalfAvg)}% до ${Math.round(secondHalfAvg)}% — вы уверенно вошли в рабочий ритм.`;
+    }
+  }
+
+  if (inFocusPct >= 80 && record.distractionEventsCount <= 2) {
+    return `ровная и устойчивая сессия: ${inFocusPct}% времени выше порога ${record.threshold}% при минимуме отвлечений (${record.distractionEventsCount}).`;
+  }
+
+  if (record.distractionEventsCount >= 5) {
+    return `зафиксировано ${record.distractionEventsCount} просадок ниже порога ${record.threshold}%. Попробуйте снизить порог на 5–10% или увеличить сглаживание в настройках.`;
+  }
+
+  return `стабильный темп: ${inFocusPct}% времени в целевой зоне (средний балл ${Math.round(record.averageFocusScore)}%).`;
 }

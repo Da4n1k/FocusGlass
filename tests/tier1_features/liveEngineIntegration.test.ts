@@ -222,3 +222,38 @@ test('Store Integration: useFocusStore propagates settings to live engine and re
   store.getState().resetSession(false);
   assert.strictEqual(store.getState().sessionStats.durationSeconds, 0);
 });
+
+test('Store Integration: feedbackStyle, artifactFilterEnabled, and timed pause behave cleanly', () => {
+  simulationEngine.stop();
+  const store = useFocusStore;
+
+  store.getState().setFeedbackStyle('blur');
+  assert.strictEqual(store.getState().feedbackStyle, 'blur');
+  assert.strictEqual(store.getState().settings.feedbackStyle, 'blur');
+
+  store.getState().updateSettings({ artifactFilterEnabled: false });
+  assert.strictEqual(store.getState().settings.artifactFilterEnabled, false);
+
+  const engine = new BiofeedbackEngine({
+    threshold: 60,
+    sensitivitySeconds: 0.001,
+    artifactFilterEnabled: false,
+  });
+  const unfilteredArtifact = engine.processTelemetry({
+    timestamp: 1000,
+    rawChannels: { t3: 150, t4: 150, o1: 20, o2: 20 },
+    concentration: 20,
+    relaxation: 50,
+    signalQuality: { t3: true, t4: true, o1: true, o2: true },
+    isArtifact: true,
+  });
+  assert.strictEqual(unfilteredArtifact.isArtifactFrozen, false);
+  assert.ok(unfilteredArtifact.overlayOpacity > 0);
+
+  store.getState().pauseForMinutes(5);
+  assert.strictEqual(store.getState().isPaused, true);
+  store.getState().togglePause();
+  assert.strictEqual(store.getState().isPaused, false);
+
+  store.getState().updateSettings({ artifactFilterEnabled: true, feedbackStyle: 'dimming' });
+});

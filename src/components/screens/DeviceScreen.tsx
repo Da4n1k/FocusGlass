@@ -39,13 +39,16 @@ export const DeviceScreen: React.FC = () => {
     o2: isSimulator,
   };
 
-  const connectedCount = [quality.t3, quality.t4, quality.o1, quality.o2].filter(Boolean).length;
+  const connectedCount = isStreamActive
+    ? [quality.t3, quality.t4, quality.o1, quality.o2].filter(Boolean).length
+    : 0;
 
   const formatResistance = (
     channelOk: boolean,
     val: number | null | undefined,
     fallbackVal: number
   ): string => {
+    if (!isStreamActive) return '— кОм';
     if (!channelOk) return 'нет контакта';
     if (val === null) return '— кОм';
     const numeric = val ?? fallbackVal;
@@ -85,9 +88,9 @@ export const DeviceScreen: React.FC = () => {
       setActiveNav('onboarding');
       return;
     }
+    startCalibration(30);
     setOnboardingStep('calibrating');
     setActiveNav('onboarding');
-    startCalibration(30);
   };
 
   const handleCheckContact = () => {
@@ -95,18 +98,22 @@ export const DeviceScreen: React.FC = () => {
     setContactCheckNote(null);
     setTimeout(() => {
       setIsCheckingContact(false);
-      setContactCheckNote(
-        connectedCount === 4 ? 'Контакт стабилен (4/4)' : `Активно: ${connectedCount} из 4`
-      );
+      if (!isStreamActive) {
+        setContactCheckNote('Нет активного сигнала');
+      } else {
+        setContactCheckNote(
+          connectedCount === 4 ? 'Контакт стабилен (4/4)' : `Активно: ${connectedCount} из 4`
+        );
+      }
       setTimeout(() => setContactCheckNote(null), 2500);
-    }, 700);
+    }, 350);
   };
 
   const handleDisconnect = () => {
     if (isSimulator) {
       updateSettings({ deviceSource: 'bluetooth' });
     } else if (isBleConnected) {
-      updateSettings({ deviceSource: 'bluetooth' });
+      updateSettings({ deviceSource: 'simulator' });
     }
   };
 
@@ -116,7 +123,7 @@ export const DeviceScreen: React.FC = () => {
       ? calibrationResult
       : null;
 
-  const hasBaselineMetrics = isSimulator || Boolean(activeCalibration);
+  const hasBaselineMetrics = Boolean(activeCalibration);
 
   const formatCalibrationDate = (iso?: string) => {
     const dt = iso ? new Date(iso) : new Date();
@@ -132,8 +139,8 @@ export const DeviceScreen: React.FC = () => {
   const baselineLabel = activeCalibration
     ? formatCalibrationDate(activeCalibration.calibratedAt)
     : isSimulator
-    ? 'калибровка от 19 ноября, 13:38'
-    : 'индивидуальные пороги ещё не настроены';
+      ? 'демо-режим · калибровка ещё не проводилась'
+      : 'индивидуальные пороги ещё не настроены';
 
   const statusPillStyle = isStreamActive
     ? 'bg-[#34D399]/[0.12] text-[#6EE7B7]'
@@ -175,9 +182,9 @@ export const DeviceScreen: React.FC = () => {
 
               <div className="min-w-0">
                 <h2 className="text-[20px] leading-[1.2] font-bold tracking-tight text-[#EEF1F8] truncate">
-                  {isBleConnected && deviceStatus.deviceName
-                    ? deviceStatus.deviceName
-                    : 'BrainBit-2A41'}
+                  {isSimulator
+                    ? 'Симулятор ЭЭГ'
+                    : deviceStatus.deviceName || 'BrainBit BLE'}
                 </h2>
 
                 <div className="flex flex-wrap items-center gap-2 mt-2.5">
@@ -191,17 +198,19 @@ export const DeviceScreen: React.FC = () => {
                           : 'bg-[#F87171] shadow-[0_0_0_3px_rgba(248,113,113,0.18)]'
                       }`}
                     />
-                    <span>{isStreamActive ? 'Подключён' : 'Отключён'}</span>
+                    <span>
+                      {isSimulator
+                        ? 'Демо-поток'
+                        : isBleConnected
+                          ? 'Подключён'
+                          : 'Отключён'}
+                    </span>
                   </span>
 
                   <span className="h-[26px] px-3 rounded-full bg-white/[0.06] text-[#C9D1E3] flex items-center gap-1.5 text-[12px] font-medium tabular-nums">
                     <Battery className="w-3.5 h-3.5 text-[#C9D1E3]" />
                     <span>
-                      {isBleConnected
-                        ? `${deviceStatus.batteryPercentage}%`
-                        : isSimulator
-                        ? '82%'
-                        : '—'}
+                      {isStreamActive ? `${deviceStatus.batteryPercentage}%` : '—'}
                     </span>
                   </span>
 
@@ -256,7 +265,7 @@ export const DeviceScreen: React.FC = () => {
               className="h-[36px] px-4 rounded-[10px] bg-[#F87171]/[0.08] hover:bg-[#F87171]/[0.14] border border-[#F87171]/[0.25] text-[#FCA5A5] text-[13px] font-medium flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
             >
               <Power className="w-3.5 h-3.5" />
-              <span>Отключить</span>
+              <span>{isSimulator ? 'Остановить демо' : 'Отключить'}</span>
             </button>
             <button
               type="button"
