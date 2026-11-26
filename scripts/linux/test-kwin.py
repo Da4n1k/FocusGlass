@@ -60,8 +60,19 @@ try:
     (artifacts/"support-information.txt").write_text(info)
     clients = dict(env, WAYLAND_DISPLAY="focusglass-test", QT_QPA_PLATFORM="wayland")
     launch([str(repo/"native/build/focusglass-native-scene"),"--glass"],clients)
-    launch([str(repo/"native/build/focusglass-native-scene"),"--controls",
+    controls = launch([str(repo/"native/build/focusglass-native-scene"),"--controls",
         *(["--diagnose"] if one_shot else [])],clients)
+    # Deterministic protection fixture. Otherwise the foreign window can map
+    # later and completely cover the controls, legitimately leaving no protected
+    # pixels to sample in an occlusion-aware renderer.
+    arrange = artifacts/"arrange-controls.js"
+    arrange.write_text("""function arrange(w) { if (w.pid === %d) w.keepAbove = true; }
+        workspace.windowAdded.connect(arrange); workspace.windowList().forEach(arrange);""" % controls.pid)
+    bus = dbus.SessionBus()
+    script_id = bus.call_blocking("org.kde.KWin","/Scripting","org.kde.kwin.Scripting",
+        "loadScript","ss",(str(arrange),"focusglass-test-arrange"))
+    dbus.Interface(bus.get_object("org.kde.KWin","/Scripting/Script"+str(script_id)),
+        "org.kde.kwin.Script").run()
     connection = socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
     connection.settimeout(3)
     connection.connect(env["FOCUSGLASS_EFFECT_SOCKET"])
@@ -101,6 +112,10 @@ try:
         connection.close()
         subprocess.run(["cargo","test","native_worker_preview_and_watchdog","--","--ignored","--nocapture"],
             cwd=repo/"src-tauri",env=dict(clients,XDG_SESSION_TYPE="wayland"),check=True)
+    if os.environ.get("FOCUSGLASS_TEST_WEBKIT") == "1":
+        subprocess.run(["cargo","test","timers_and_blur_survive_minimize_and_hide","--","--ignored","--nocapture"],
+            cwd=repo/"src-tauri",env=dict(clients,XDG_SESSION_TYPE="wayland",
+                FOCUSGLASS_WEBKIT_EVIDENCE=str(artifacts/"background-processing.json")),check=True)
 finally:
     for process in reversed(children):
         if process.poll() is None:

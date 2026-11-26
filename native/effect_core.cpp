@@ -4,12 +4,28 @@
 #include <QJsonDocument>
 #include <QLocalSocket>
 #include <QStandardPaths>
+#include <QRegion>
 #include <algorithm>
 #include <cmath>
 #include <sys/socket.h>
 #include <unistd.h>
 
 namespace FocusGlass {
+std::vector<QRectF> visibleProtectedRects(const std::vector<SurfaceMask> &surfaces)
+{
+    QRegion covered;
+    std::vector<QRectF> result;
+    for (auto it = surfaces.rbegin(); it != surfaces.rend(); ++it) {
+        if (it->rect.isEmpty()) continue;
+        if (it->protect) {
+            const QRegion visible = QRegion(it->rect.adjusted(-3,-3,3,3).toAlignedRect()).subtracted(covered);
+            for (const auto &rect : visible) result.emplace_back(rect);
+        }
+        covered += it->opaque.value_or(QRegion(it->rect.toAlignedRect()));
+    }
+    return result;
+}
+
 QString socketPath()
 {
     const auto explicitPath = qEnvironmentVariable("FOCUSGLASS_EFFECT_SOCKET");

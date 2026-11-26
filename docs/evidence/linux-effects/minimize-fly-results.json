@@ -1,0 +1,15 @@
+{
+  "backend": "x11-xcomposite-gpu",
+  "frames": 41,
+  "window_manager": "fly-wm 2.43.9+ci12 / Astra Common packages",
+  "managed_fixtures": true,
+  "protected_windows": 3,
+  "blurred_samples_changed": 1536,
+  "own_window_changed": 0,
+  "panel_changed": 0,
+  "click_through": true,
+  "keyboard_through": true,
+  "preview_cleared": true,
+  "threshold_visible_within_seconds": 0.445,
+  "scene_restored": true
+}

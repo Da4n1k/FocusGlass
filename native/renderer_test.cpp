@@ -5,6 +5,7 @@
 #include <QSurfaceFormat>
 #include <QDebug>
 #include <cmath>
+#include <algorithm>
 #include <stdexcept>
 
 static void require(bool condition, const char *message)
@@ -26,6 +27,21 @@ int main(int argc, char **argv)
         qCritical() << "OpenGL 3.3 context unavailable"; return 1;
     }
     try {
+        const auto visible = FocusGlass::visibleProtectedRects({
+            {{0,0,128,128},false},{{32,32,64,64},true},{{64,0,64,128},false}});
+        auto protectedAt = [](const auto &rects,QPointF point) {
+            return std::any_of(rects.begin(),rects.end(),[&](const auto &rect){return rect.contains(point);});
+        };
+        require(protectedAt(visible,{40,60}),"Visible controls were not protected");
+        require(!protectedAt(visible,{90,60}),"Foreign window inherited a sharp hole from controls underneath");
+        require(FocusGlass::visibleProtectedRects({{{0,0,128,128},false}}).empty(),
+            "Hidden controls left a stale protected rectangle");
+        const auto moved = FocusGlass::visibleProtectedRects({{{8,8,16,16},true}});
+        require(!protectedAt(moved,{40,60}),"Moving controls left a stale protected rectangle");
+        const auto transparent = FocusGlass::visibleProtectedRects({
+            {{32,32,64,64},true,std::nullopt},{{0,0,128,128},false,QRegion()}});
+        require(protectedAt(transparent,{40,60}),"Transparent fullscreen surface erased controls protection");
+        qInfo() << "PASS: visible-only, occlusion-aware protection; no stale holes after hide/move";
         constexpr int width = 128, height = 128;
         std::vector<unsigned char> source(width*height*4);
         for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
@@ -49,21 +65,33 @@ int main(int argc, char **argv)
         FocusGlass::Renderer renderer;
         QString error;
         require(renderer.initialize(error), qPrintable(error));
-        auto render = [&](double radius) {
+        auto render = [&](double radius,const std::vector<QRectF> &protectedRects) {
             glBindFramebuffer(GL_READ_FRAMEBUFFER, fbos[0]);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbos[1]);
             glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
             glBindFramebuffer(GL_FRAMEBUFFER, fbos[1]);
             glViewport(0, 0, width, height);
             renderer.render(textures[0], {width,height}, {0,0,width,height}, {width,height},
-                {{0,0,64,height}}, 1, radius, 0.1, {-9999,-9999}, 0.016, false, false);
+                protectedRects, 1, radius, 0.1, {-9999,-9999}, 0.016, false, false);
             std::vector<unsigned char> output(source.size());
             glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, output.data());
             require(glGetError() == GL_NO_ERROR, "GL error during real shader render");
             return output;
         };
-        const auto mild = render(1);
-        const auto strong = render(8);
+        const auto mild = render(1,{{0,0,64,height}});
+        const auto strong = render(8,{{0,0,64,height}});
+        const auto occluded = render(8,visible);
+        require(occluded[(60*width+40)*4] == source[(60*width+40)*4],
+            "Visible controls lost their sharp pixels");
+        require(occluded[(60*width+90)*4] != source[(60*width+90)*4],
+            "Foreground foreign pixels stayed sharp over occluded controls");
+        const auto hidden = render(8,{});
+        require(hidden[(60*width+40)*4] != source[(60*width+40)*4],
+            "Pixels behind hidden controls stayed sharp");
+        const auto movedOutput = render(8,moved);
+        require(movedOutput[(60*width+40)*4] != source[(60*width+40)*4],
+            "Pixels behind moved controls stayed sharp");
+        qInfo() << "PASS: actual GPU pixels blur behind hidden/moved/occluded controls";
         int unchanged = 0;
         double before = 0, afterMild = 0, afterStrong = 0;
         for (int y = 8; y < height-8; ++y) for (int x = 8; x < width-8; ++x) {

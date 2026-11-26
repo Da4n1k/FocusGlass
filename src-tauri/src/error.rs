@@ -40,6 +40,9 @@ pub enum AppError {
 
     #[error("Wayland blur error: {0}")]
     WaylandBlur(String),
+
+    #[error("background processing configuration failed: {0}")]
+    BackgroundProcessing(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -58,6 +61,7 @@ impl AppError {
             AppError::UnknownDeviceSource(_) => "unknown_device_source",
             AppError::Bci(_) => "bci",
             AppError::WaylandBlur(_) => "wayland_blur",
+            AppError::BackgroundProcessing(_) => "background_processing",
         }
     }
 }
