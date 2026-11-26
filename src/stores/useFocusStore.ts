@@ -8,6 +8,7 @@ import type {
   DeviceStatus,
   PresetState,
   CalibrationResult,
+  FeedbackStyle,
 } from '../services/eegTypes';
 import { BiofeedbackEngine, DEFAULT_SETTINGS } from '../services/biofeedbackEngine';
 import { simulationEngine } from '../services/simulationEngine';
@@ -196,8 +197,8 @@ interface FocusStoreState {
   dismissGentleAlert: () => void;
   settingsSubTab: 'feedback' | 'sensitivity' | 'sound' | 'hotkeys';
   setSettingsSubTab: (tab: 'feedback' | 'sensitivity' | 'sound' | 'hotkeys') => void;
-  feedbackStyle: 'dimming' | 'blur' | 'distracting_only';
-  setFeedbackStyle: (style: 'dimming' | 'blur' | 'distracting_only') => void;
+  feedbackStyle: FeedbackStyle;
+  setFeedbackStyle: (style: FeedbackStyle) => void;
 
   // Settings
   settings: FocusGlassSettings;
@@ -232,9 +233,10 @@ interface FocusStoreState {
   setPreset: (preset: PresetState) => void;
   injectArtifact: () => void;
   togglePause: () => void;
+  pauseForMinutes: (minutes: number) => void;
   setElectrodeContact: (channel: 't3' | 't4' | 'o1' | 'o2', ok: boolean) => void;
   resetSession: (saveCurrent?: boolean) => void;
-  exportSessionsCsv: () => void;
+  exportSessionsCsv: (singleRecord?: SessionRecord) => void;
 
   // Calibration
   isCalibrating: boolean;
@@ -252,7 +254,15 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
   const initialSettings = loadPersistedSettings();
   let calibrationFrames: EEGTelemetry[] = [];
   let calibrationTimer: ReturnType<typeof setInterval> | null = null;
+  let pauseResumeTimer: ReturnType<typeof setTimeout> | null = null;
   let lastTimelineSample = Date.now();
+
+  const clearPauseResumeTimer = () => {
+    if (pauseResumeTimer) {
+      clearTimeout(pauseResumeTimer);
+      pauseResumeTimer = null;
+    }
+  };
 
   simulationEngine.subscribe((telemetry, feedbackState, sessionStats) => {
     const state = get();
@@ -263,6 +273,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     const isSummaryOrEnded = state.isSessionEnded || state.activeNav === 'summary';
     const shouldPlayAudio =
+      !state.isPaused &&
       !isSummaryOrEnded &&
       state.settings.audioFeedbackEnabled &&
       feedbackState.isDimmingActive &&
@@ -279,14 +290,13 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       telemetry.signalQuality.o1 ||
       telemetry.signalQuality.o2;
     const canRecordTimeline =
+      !state.isPaused &&
       !isSummaryOrEnded &&
       (state.settings.deviceSource === 'simulator' || hasContactSignal);
 
     if (canRecordTimeline && now - lastTimelineSample >= 1000) {
       lastTimelineSample = now;
-      const currentMetric = Math.round(
-        state.settings.mode === 'concentration' ? telemetry.concentration : telemetry.relaxation
-      );
+      const currentMetric = Math.round(feedbackState.smoothedMetric);
       const isDip = currentMetric < state.settings.threshold;
       const newPoint: FocusTimelinePoint = {
         time: new Date().toLocaleTimeString('ru-RU', { minute: '2-digit', second: '2-digit' }),
@@ -294,7 +304,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         focus: currentMetric,
         isDip,
       };
-      updatedTimeline = [...state.focusTimeline.slice(-120), newPoint];
+      updatedTimeline = [...state.focusTimeline.slice(-599), newPoint];
     }
 
     set({
@@ -347,10 +357,13 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     dismissGentleAlert: () => set({ isGentleAlertDismissed: true }),
     settingsSubTab: 'feedback',
     setSettingsSubTab: (tab) => set({ settingsSubTab: tab }),
-    feedbackStyle: 'dimming',
-    setFeedbackStyle: (style) => set({ feedbackStyle: style }),
+    feedbackStyle: initialSettings.feedbackStyle ?? 'dimming',
+    setFeedbackStyle: (style) => {
+      get().updateSettings({ feedbackStyle: style });
+    },
 
     finishSession: () => {
+      clearPauseResumeTimer();
       const { sessionStats, settings, sessionStartedAt, sessionHistory, focusTimeline } = get();
       const record: SessionRecord = {
         ...sessionStats,
@@ -382,6 +395,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     },
 
     startNewSession: () => {
+      clearPauseResumeTimer();
       if (simulationEngine.getIsPaused()) {
         simulationEngine.togglePause();
       }
@@ -389,13 +403,14 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       get().resetSession(false);
       set({
         activeNav: 'session',
-        focusTimeline: isBluetooth ? [] : generateInitialTimeline(get().settings.threshold),
+        focusTimeline: [],
         lastCompletedSession: null,
         isGentleAlertDismissed: false,
         isSessionEnded: false,
         isPaused: false,
         ...(isBluetooth
           ? {
+              telemetry: null,
               feedbackState: {
                 currentMetric: 0,
                 smoothedMetric: 0,
@@ -433,6 +448,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         const isBluetooth = updated.deviceSource === 'bluetooth';
         set({
           settings: updated,
+          feedbackStyle: updated.feedbackStyle ?? 'dimming',
           sessionStartedAt: new Date().toISOString(),
           sessionStats: simulationEngine.getSessionStats(),
           focusTimeline: isBluetooth ? [] : generateInitialTimeline(updated.threshold),
@@ -440,6 +456,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
           isGentleAlertDismissed: false,
           ...(isBluetooth
             ? {
+                telemetry: null,
                 feedbackState: {
                   currentMetric: 0,
                   smoothedMetric: 0,
@@ -460,7 +477,10 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         return;
       }
 
-      set({ settings: updated });
+      set({
+        settings: updated,
+        feedbackStyle: updated.feedbackStyle ?? 'dimming',
+      });
     },
 
     viewMode: 'dashboard',
@@ -551,6 +571,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     },
 
     togglePause: () => {
+      clearPauseResumeTimer();
       const paused = simulationEngine.togglePause();
       if (paused) {
         audioFeedback.sync(false, 0);
@@ -558,11 +579,30 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       set({ isPaused: paused });
     },
 
+    pauseForMinutes: (minutes) => {
+      clearPauseResumeTimer();
+      if (!simulationEngine.getIsPaused()) {
+        simulationEngine.togglePause();
+      }
+      audioFeedback.sync(false, 0);
+      set({ isPaused: true });
+
+      const ms = Math.max(1000, Math.round(minutes * 60 * 1000));
+      pauseResumeTimer = setTimeout(() => {
+        pauseResumeTimer = null;
+        if (simulationEngine.getIsPaused()) {
+          const paused = simulationEngine.togglePause();
+          set({ isPaused: paused, isGentleAlertDismissed: false });
+        }
+      }, ms);
+    },
+
     setElectrodeContact: (channel, ok) => {
       simulationEngine.setElectrodeQuality(channel, ok);
     },
 
     resetSession: (saveCurrent = true) => {
+      clearPauseResumeTimer();
       const { sessionStats, settings, sessionStartedAt, sessionHistory } = get();
       let updatedHistory = sessionHistory;
 
@@ -590,12 +630,12 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       });
     },
 
-    exportSessionsCsv: () => {
+    exportSessionsCsv: (singleRecord) => {
       if (typeof document === 'undefined') return;
       const { sessionHistory, sessionStats, settings, sessionStartedAt } = get();
 
-      const rows: SessionRecord[] = [...sessionHistory];
-      if (sessionStats.durationSeconds >= 1) {
+      const rows: SessionRecord[] = singleRecord ? [singleRecord] : [...sessionHistory];
+      if (!singleRecord && sessionStats.durationSeconds >= 1) {
         rows.unshift({
           ...sessionStats,
           id: 'active',
@@ -606,6 +646,11 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
           threshold: settings.threshold,
         });
       }
+
+      const escapeCsv = (val: string | number) => {
+        const s = String(val);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
 
       const header = [
         'id',
@@ -640,7 +685,9 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
           r.minFocusScore,
           r.maxFocusScore,
           r.artifactCount,
-        ].join(',')
+        ]
+          .map(escapeCsv)
+          .join(',')
       );
 
       const csv = [header, ...lines].join('\n');
@@ -649,7 +696,9 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       const link = document.createElement('a');
       const dateStr = new Date().toISOString().slice(0, 10);
       link.href = url;
-      link.download = `focusglass-sessions-${dateStr}.csv`;
+      link.download = singleRecord
+        ? `focusglass-session-${dateStr}.csv`
+        : `focusglass-sessions-${dateStr}.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);

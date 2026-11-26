@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildSessionInsightRu,
   computeInFocusPct,
   getDistractionIntervalLabel,
   getFocusDeltaSummary,
 } from '../../src/services/sessionSummaryMetrics.ts';
-import type { SessionRecord } from '../../src/services/eegTypes.ts';
+import type { FocusTimelinePoint, SessionRecord } from '../../src/services/eegTypes.ts';
 
 function makeRecord(overrides: Partial<SessionRecord>): SessionRecord {
   return {
@@ -91,4 +92,26 @@ test('Summary Metrics: distraction interval adapts cleanly across zero, seconds,
   assert.strictEqual(getDistractionIntervalLabel(5, 52 * 60), 'в среднем раз в 10 мин');
   assert.strictEqual(getDistractionIntervalLabel(1, 30 * 60), 'в среднем раз в 30 мин');
   assert.strictEqual(getDistractionIntervalLabel(1, 90 * 60), 'в среднем раз в 2 ч');
+});
+
+test('Summary Metrics: buildSessionInsightRu adapts insight to session metrics and trend', () => {
+  const shortRec = makeRecord({ durationSeconds: 18, averageFocusScore: 73 });
+  assert.ok(buildSessionInsightRu(shortRec, []).includes('Короткая сессия'));
+
+  const fadingPoints: FocusTimelinePoint[] = [82, 80, 78, 52, 48, 45].map((focus, i) => ({
+    time: `10:0${i}`,
+    timestamp: i * 1000,
+    focus,
+    isDip: focus < 55,
+  }));
+  const fadingRec = makeRecord({ durationSeconds: 1800, timeInFocusSeconds: 900 });
+  assert.ok(buildSessionInsightRu(fadingRec, fadingPoints).includes('первой половине'));
+
+  const steadyRec = makeRecord({
+    durationSeconds: 1800,
+    timeInFocusSeconds: 1620,
+    distractionEventsCount: 1,
+    mode: 'relaxation',
+  });
+  assert.ok(buildSessionInsightRu(steadyRec, []).includes('90% времени'));
 });

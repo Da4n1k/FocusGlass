@@ -40,7 +40,7 @@ export const HistoryScreen: React.FC = () => {
 
         {/* Экспорт всех сессий */}
         <button
-          onClick={exportSessionsCsv}
+          onClick={() => exportSessionsCsv()}
           className="h-[36px] px-[14px] rounded-[10px] bg-transparent hover:bg-white/[0.04] border border-white/[0.12] text-[14px] font-semibold text-[#C9D1E3] flex items-center gap-2 transition-colors cursor-pointer self-start shrink-0"
         >
           <svg className="w-[17px] h-[17px] text-[#C9D1E3] shrink-0" viewBox="0 0 17 17" fill="none">

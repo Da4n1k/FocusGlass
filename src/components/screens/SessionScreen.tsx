@@ -50,6 +50,7 @@ export const SessionScreen: React.FC = () => {
     setActiveNav,
     finishSession,
     focusTimeline,
+    feedbackStyle,
   } = useFocusStore();
 
   const isSimulator = settings.deviceSource === 'simulator';
@@ -59,14 +60,18 @@ export const SessionScreen: React.FC = () => {
     sessionStats.durationSeconds > 0 ||
     focusTimeline.length > 0;
 
-  const currentMetric = isSimulator
-    ? Math.round(feedbackState.smoothedMetric) || 78
-    : hasSignalData
-      ? Math.round(feedbackState.smoothedMetric)
-      : 0;
+  const currentMetric = hasSignalData ? Math.round(feedbackState.smoothedMetric) : 0;
   const isConcentration = settings.mode === 'concentration';
   const threshold = settings.threshold;
-  const isBelowThreshold = hasSignalData && currentMetric < threshold;
+  const isBelowThreshold = hasSignalData && feedbackState.isContactOk && currentMetric < threshold;
+  const activeFeedbackStyle = settings.feedbackStyle ?? feedbackStyle;
+  const maxDimPct = Math.round(settings.dimmingMaxOpacity * 100);
+  const feedbackStyleLabel =
+    activeFeedbackStyle === 'blur'
+      ? `Размытие · до ${settings.blurRadius} px`
+      : activeFeedbackStyle === 'distracting_only'
+        ? `Только отвлекающие окна · до ${maxDimPct}%`
+        : `Плавное затемнение · до ${maxDimPct}%`;
 
   // Format session duration
   const formatTime = (totalSeconds: number) => {
@@ -148,7 +153,6 @@ export const SessionScreen: React.FC = () => {
   const handleThresholdChange = (val: number) => {
     updateSettings({
       threshold: val,
-      dimmingMaxOpacity: val / 100,
     });
   };
 
@@ -261,12 +265,16 @@ export const SessionScreen: React.FC = () => {
                 ) : isBelowThreshold ? (
                   <div className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-[#FBBF24]/12 border border-[#FBBF24]/20 text-[#FBBF24] text-[13px] font-medium">
                     <span className="w-1.5 h-1.5 rounded-full bg-[#FBBF24] animate-pulse" />
-                    <span>Фокус ниже порога</span>
+                    <span>
+                      {isConcentration ? 'Фокус ниже порога' : 'Спокойствие ниже порога'}
+                    </span>
                   </div>
                 ) : (
                   <div className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-[#34D399]/12 border border-[#34D399]/20 text-[#6EE7B7] text-[13px] font-medium">
                     <Check className="w-3.5 h-3.5 text-[#34D399]" />
-                    <span>Внимание в норме</span>
+                    <span>
+                      {isConcentration ? 'Внимание в норме' : 'Спокойствие в норме'}
+                    </span>
                   </div>
                 )}
               </div>
@@ -344,7 +352,7 @@ export const SessionScreen: React.FC = () => {
 
                       {/* Dip markers */}
                       {points.map((p, i) => {
-                        if (!p.isDip) return null;
+                        if (p.focus >= threshold) return null;
                         const { x, y } = getCoord(i, p.focus);
                         return (
                           <circle
@@ -366,7 +374,7 @@ export const SessionScreen: React.FC = () => {
                       cy={getCoord(0, points[0].focus).y}
                       r="4"
                       fill="#0B0F1A"
-                      stroke={points[0].isDip ? '#FBBF24' : isConcentration ? '#FF7A2F' : '#34D399'}
+                      stroke={points[0].focus < threshold ? '#FBBF24' : isConcentration ? '#FF7A2F' : '#34D399'}
                       strokeWidth="2.5"
                     />
                   )}
@@ -430,10 +438,14 @@ export const SessionScreen: React.FC = () => {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-semibold text-[#EEF1F8] group-hover:text-[#FF7A2F] transition-colors">
-                    Плавное затемнение
+                    {activeFeedbackStyle === 'blur'
+                      ? 'Размытие экрана'
+                      : activeFeedbackStyle === 'distracting_only'
+                        ? 'Только отвлекающие окна'
+                        : 'Плавное затемнение'}
                   </div>
                   <div className="text-[12.5px] text-[#A3ACC2] mt-0.5">
-                    до {threshold}% · клики проходят насквозь
+                    {feedbackStyleLabel} · настройки
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-[#A3ACC2] group-hover:text-white transition-colors shrink-0 mt-0.5" />
@@ -452,11 +464,7 @@ export const SessionScreen: React.FC = () => {
             <div>
               <div className="text-[13px] text-[#A3ACC2]">Длительность</div>
               <div className="text-[22px] font-bold text-[#EEF1F8] font-mono leading-tight">
-                {isSimulator
-                  ? sessionStats.durationSeconds > 0
-                    ? formatTime(sessionStats.durationSeconds)
-                    : '24:18'
-                  : formatTime(sessionStats.durationSeconds)}
+                {formatTime(sessionStats.durationSeconds)}
               </div>
             </div>
           </div>
@@ -477,9 +485,7 @@ export const SessionScreen: React.FC = () => {
                   ? Math.round(
                       (sessionStats.timeInFocusSeconds / sessionStats.durationSeconds) * 100
                     )
-                  : isSimulator
-                    ? 82
-                    : 0}
+                  : 0}
                 %
               </div>
             </div>
@@ -493,9 +499,7 @@ export const SessionScreen: React.FC = () => {
             <div>
               <div className="text-[13px] text-[#A3ACC2]">Отвлечения</div>
               <div className="text-[22px] font-bold text-[#EEF1F8] font-mono leading-tight">
-                {isSimulator
-                  ? sessionStats.distractionEventsCount || 3
-                  : sessionStats.distractionEventsCount}
+                {sessionStats.distractionEventsCount}
               </div>
             </div>
           </div>
@@ -512,11 +516,9 @@ export const SessionScreen: React.FC = () => {
             <div>
               <div className="text-[13px] text-[#A3ACC2]">Средний фокус</div>
               <div className="text-[22px] font-bold text-[#EEF1F8] font-mono leading-tight">
-                {isSimulator
-                  ? Math.round(sessionStats.averageFocusScore) || 71
-                  : sessionStats.durationSeconds > 0
-                    ? Math.round(sessionStats.averageFocusScore)
-                    : 0}
+                {sessionStats.durationSeconds > 0
+                  ? Math.round(sessionStats.averageFocusScore)
+                  : 0}
                 %
               </div>
             </div>

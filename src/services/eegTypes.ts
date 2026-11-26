@@ -47,6 +47,8 @@ export interface EEGTelemetry {
   isArtifact: boolean;   // EMG / EOG artifact flag
 }
 
+export type FeedbackStyle = 'dimming' | 'blur' | 'distracting_only';
+
 export interface FocusGlassSettings {
   mode: 'concentration' | 'relaxation';
   deviceSource: 'simulator' | 'bluetooth';
@@ -56,6 +58,8 @@ export interface FocusGlassSettings {
   blurRadius: number;            // Maximum vignette blur [0, 32]px (default: 16)
   audioFeedbackEnabled: boolean; // Filtered pink-noise biofeedback modulation
   glassOpacity: number;          // UI panel translucency [0.1, 1.0] (default: 0.85)
+  feedbackStyle?: FeedbackStyle; // Visual feedback presentation mode
+  artifactFilterEnabled?: boolean; // Freeze biofeedback opacity during EMG/EOG bursts
 }
 
 export interface BiofeedbackFeedbackState {

@@ -54,11 +54,17 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
 
   const isSimulator = settings.deviceSource === 'simulator';
   const isBleConnected = !isSimulator && deviceStatus.connected;
+  const isStreamActive = isSimulator || isBleConnected;
 
-  const quality = telemetry?.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
-  const activeSensorsCount = isSimulator || isBleConnected
+  const quality = telemetry?.signalQuality ?? {
+    t3: isSimulator,
+    t4: isSimulator,
+    o1: isSimulator,
+    o2: isSimulator,
+  };
+  const activeSensorsCount = isStreamActive
     ? [quality.t3, quality.t4, quality.o1, quality.o2].filter(Boolean).length
-    : 4;
+    : 0;
 
   const navItems = [
     { id: 'session', label: 'Сессия', icon: SessionNavIcon },
@@ -166,19 +172,37 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
               className="p-3.5 rounded-[14px] bg-[#131A2A] border border-white/[0.06] hover:border-white/15 transition-all cursor-pointer group"
             >
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-[#34D399] shadow-[0_0_8px_rgba(52,211,153,0.6)]" />
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    !isStreamActive
+                      ? 'bg-[#F87171] shadow-[0_0_8px_rgba(248,113,113,0.6)]'
+                      : activeSensorsCount === 4
+                        ? 'bg-[#34D399] shadow-[0_0_8px_rgba(52,211,153,0.6)]'
+                        : 'bg-[#FBBF24] shadow-[0_0_8px_rgba(251,191,36,0.6)]'
+                  }`}
+                />
                 <span className="text-[13px] font-semibold text-[#EEF1F8] group-hover:text-[#FF7A2F] transition-colors truncate">
-                  {isBleConnected ? 'BrainBit · подключён' : 'BrainBit · подключён'}
+                  {isSimulator
+                    ? 'Демо-режим · активен'
+                    : isBleConnected
+                      ? 'BrainBit · подключён'
+                      : 'BrainBit · отключён'}
                 </span>
               </div>
               <div className="flex items-center gap-2 mt-1.5 text-[11px] text-[#A3ACC2]">
                 <span className="flex items-center gap-1.5 text-[#A3ACC2]">
                   <BatteryWithSegmentsIcon className="w-4 h-2.5 text-[#A3ACC2]" />
-                  <span>{isBleConnected ? `${deviceStatus.batteryPercentage}%` : '82%'}</span>
+                  <span>
+                    {isStreamActive ? `${deviceStatus.batteryPercentage}%` : '—'}
+                  </span>
                 </span>
                 <span className="text-[#3A4560]">•</span>
                 <span className="flex items-center gap-1 text-[#A3ACC2]">
-                  <Check className="w-3 h-3 text-[#34D399]" />
+                  {isStreamActive && activeSensorsCount === 4 ? (
+                    <Check className="w-3 h-3 text-[#34D399]" />
+                  ) : (
+                    <X className="w-3 h-3 text-[#F87171]" />
+                  )}
                   <span>Датчики {activeSensorsCount}/4</span>
                 </span>
               </div>

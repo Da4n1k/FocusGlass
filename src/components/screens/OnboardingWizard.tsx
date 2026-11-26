@@ -15,6 +15,8 @@ import {
   Flame,
 } from 'lucide-react';
 import { useFocusStore } from '../../stores/useFocusStore';
+import { tauriBridge } from '../../services/tauriBridge';
+import type { DiscoveredBrainBitDevice } from '../../services/eegTypes';
 import headbandHero from '../../assets/headband-hero.webp';
 
 export const OnboardingWizard: React.FC = () => {
@@ -22,7 +24,10 @@ export const OnboardingWizard: React.FC = () => {
     onboardingStep,
     setOnboardingStep,
     startNewSession,
+    settings,
     updateSettings,
+    deviceStatus,
+    feedbackState,
     startCalibration,
     cancelCalibration,
     isCalibrating,
@@ -33,26 +38,50 @@ export const OnboardingWizard: React.FC = () => {
     telemetry,
   } = useFocusStore();
 
-  const [selectedDevice, setSelectedDevice] = useState<'brainbit-1' | 'brainbit-2'>('brainbit-1');
+  const [discoveredDevices, setDiscoveredDevices] = useState<DiscoveredBrainBitDevice[]>([]);
+  const [selectedAddress, setSelectedAddress] = useState<string | null>(null);
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
 
-  // Auto-start calibration timer when entering calibrating step
+  const isSimulator = settings.deviceSource === 'simulator';
+  const isStreamReady = isSimulator || deviceStatus.connected;
+
+  const handleStartSearching = async () => {
+    setIsSearching(true);
+    setScanMessage(null);
+    try {
+      const res = await tauriBridge.scanBrainBitDevices();
+      setDiscoveredDevices(res.devices);
+      setScanMessage(res.message);
+      setSelectedAddress(res.devices[0]?.address ?? null);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
   useEffect(() => {
-    if (onboardingStep === 'calibrating' && !isCalibrating) {
+    if (onboardingStep === 'connect' && !isSimulator) {
+      void handleStartSearching();
+    }
+  }, [onboardingStep, isSimulator]);
+
+  // Auto-start calibration timer only when entering calibrating cleanly without an old result
+  useEffect(() => {
+    if (onboardingStep === 'calibrating' && isStreamReady && !isCalibrating && !calibrationResult) {
       startCalibration(30);
     }
-  }, [onboardingStep]);
+  }, [onboardingStep, isStreamReady, isCalibrating, calibrationResult, startCalibration]);
 
-  // When calibration completes, transition to done step
+  // Transition to done once calibration finishes
   useEffect(() => {
-    if (onboardingStep === 'calibrating' && calibrationResult) {
+    if (onboardingStep === 'calibrating' && !isCalibrating && calibrationResult) {
       setOnboardingStep('done');
     }
-  }, [calibrationResult, onboardingStep]);
+  }, [calibrationResult, isCalibrating, onboardingStep, setOnboardingStep]);
 
-  const handleStartSearching = () => {
-    setIsSearching(true);
-    setTimeout(() => setIsSearching(false), 2000);
+  const handleEnterCalibration = () => {
+    startCalibration(30);
+    setOnboardingStep('calibrating');
   };
 
   const handleFinishCalibrationAndStartSession = () => {
@@ -60,12 +89,52 @@ export const OnboardingWizard: React.FC = () => {
     startNewSession();
   };
 
-  const resistance = {
-    t3: telemetry?.resistanceKOhm?.t3 ?? 130,
-    t4: telemetry?.resistanceKOhm?.t4 ?? 132,
-    o1: telemetry?.resistanceKOhm?.o1 ?? 112,
-    o2: telemetry?.resistanceKOhm?.o2 ?? 124,
+  const quality = telemetry?.signalQuality ?? {
+    t3: isSimulator,
+    t4: isSimulator,
+    o1: isSimulator,
+    o2: isSimulator,
   };
+  const allContactOk =
+    isStreamReady && quality.t3 && quality.t4 && quality.o1 && quality.o2;
+
+  const formatResistance = (
+    ok: boolean,
+    val: number | null | undefined,
+    fallback: number
+  ): string => {
+    if (!isStreamReady) return 'нет потока';
+    if (!ok) return 'нет контакта';
+    if (val === null) return '— кОм';
+    return `${Math.round(val ?? fallback)} кОм`;
+  };
+
+  const sensorRows = [
+    {
+      id: 'T3',
+      name: 'Левый висок',
+      ok: isStreamReady && quality.t3,
+      val: formatResistance(quality.t3, telemetry?.resistanceKOhm?.t3, 130),
+    },
+    {
+      id: 'T4',
+      name: 'Правый висок',
+      ok: isStreamReady && quality.t4,
+      val: formatResistance(quality.t4, telemetry?.resistanceKOhm?.t4, 132),
+    },
+    {
+      id: 'O1',
+      name: 'Затылок слева',
+      ok: isStreamReady && quality.o1,
+      val: formatResistance(quality.o1, telemetry?.resistanceKOhm?.o1, 112),
+    },
+    {
+      id: 'O2',
+      name: 'Затылок справа',
+      ok: isStreamReady && quality.o2,
+      val: formatResistance(quality.o2, telemetry?.resistanceKOhm?.o2, 124),
+    },
+  ];
 
   return (
     <div className="min-h-full flex flex-col justify-center items-center p-6 max-w-5xl mx-auto animate-in fade-in duration-200">
@@ -208,7 +277,10 @@ export const OnboardingWizard: React.FC = () => {
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-3">
                 <button
-                  onClick={() => setOnboardingStep('connect')}
+                  onClick={() => {
+                    updateSettings({ deviceSource: 'bluetooth' });
+                    setOnboardingStep('connect');
+                  }}
                   className="flex items-center gap-2 px-6 py-3 rounded-xl bg-[#FF7A2F] hover:bg-[#ff8944] text-white text-sm font-semibold shadow-[0_4px_16px_rgba(255,122,47,0.35)] transition-all cursor-pointer"
                 >
                   <Bluetooth className="w-4 h-4" />
@@ -260,90 +332,82 @@ export const OnboardingWizard: React.FC = () => {
               </p>
             </div>
             <button
-              onClick={handleStartSearching}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1A2236] hover:bg-white/10 text-xs font-semibold text-[#EEF1F8] border border-white/5 transition-colors cursor-pointer"
+              onClick={() => void handleStartSearching()}
+              disabled={isSearching}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1A2236] hover:bg-white/10 text-xs font-semibold text-[#EEF1F8] border border-white/5 transition-colors cursor-pointer disabled:opacity-50"
             >
               <RotateCw className={`w-3.5 h-3.5 ${isSearching ? 'animate-spin' : ''}`} />
               <span>Искать снова</span>
             </button>
           </div>
 
-          {/* Search indicator */}
-          <div className="flex items-center gap-2 text-xs text-[#38BDF8]">
-            <span className="w-2 h-2 rounded-full bg-[#38BDF8] animate-ping" />
-            <span>Идёт поиск устройств поблизости...</span>
-          </div>
-
-          {/* Found Device List */}
-          <div className="space-y-3">
-            {/* Device 1 */}
-            <div
-              onClick={() => setSelectedDevice('brainbit-1')}
-              className={`p-4 rounded-xl flex items-center justify-between transition-all cursor-pointer ${
-                selectedDevice === 'brainbit-1'
-                  ? 'bg-[#1A2236] border-2 border-[#FF7A2F] shadow-sm'
-                  : 'bg-[#1A2236] border border-white/5 hover:border-white/20'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-[#131A2A] flex items-center justify-center text-[#FF7A2F]">
-                  <Bluetooth className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="text-sm font-semibold text-[#EEF1F8]">BrainBit-2A41</div>
-                  <div className="text-xs text-[#6E7891]">Сигнал отличный · заряд 82%</div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <span className="text-xs text-[#34D399] font-medium">●●●</span>
-                <span
-                  className={`w-4 h-4 rounded-full border flex items-center justify-center ${
-                    selectedDevice === 'brainbit-1'
-                      ? 'border-[#FF7A2F] bg-[#FF7A2F]'
-                      : 'border-white/20'
-                  }`}
-                >
-                  {selectedDevice === 'brainbit-1' && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-white" />
-                  )}
+          {/* Search indicator / Status */}
+          {isSimulator ? (
+            <div className="p-4 rounded-xl bg-[#FF7A2F]/10 border border-[#FF7A2F]/30 text-xs text-[#EEF1F8] space-y-1">
+              <div className="font-semibold text-[#FF7A2F]">Выбран демо-режим (симулятор 250 Гц)</div>
+              <p className="text-[#A3ACC2]">
+                Можно сразу перейти к проверке виртуальных датчиков или переключиться на поиск
+                физического обруча BrainBit по BLE.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 text-xs text-[#38BDF8]">
+                {isSearching && <span className="w-2 h-2 rounded-full bg-[#38BDF8] animate-ping" />}
+                <span>
+                  {isSearching
+                    ? 'Идёт поиск устройств BrainBit поблизости...'
+                    : discoveredDevices.length > 0
+                      ? `Найдено устройств: ${discoveredDevices.length}`
+                      : 'Устройства BrainBit BLE не найдены'}
                 </span>
               </div>
-            </div>
 
-            {/* Device 2 */}
-            <div
-              onClick={() => setSelectedDevice('brainbit-2')}
-              className={`p-4 rounded-xl flex items-center justify-between transition-all cursor-pointer ${
-                selectedDevice === 'brainbit-2'
-                  ? 'bg-[#1A2236] border-2 border-[#FF7A2F] shadow-sm'
-                  : 'bg-[#1A2236] border border-white/5 hover:border-white/20'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-[#131A2A] flex items-center justify-center text-[#A3ACC2]">
-                  <Bluetooth className="w-4 h-4" />
+              {discoveredDevices.length > 0 ? (
+                <div className="space-y-3">
+                  {discoveredDevices.map((dev) => {
+                    const isSelected = selectedAddress === dev.address;
+                    return (
+                      <div
+                        key={dev.address}
+                        onClick={() => setSelectedAddress(dev.address)}
+                        className={`p-4 rounded-xl flex items-center justify-between transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#1A2236] border-2 border-[#FF7A2F] shadow-sm'
+                            : 'bg-[#1A2236] border border-white/5 hover:border-white/20'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-lg bg-[#131A2A] flex items-center justify-center text-[#FF7A2F]">
+                            <Bluetooth className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <div className="text-sm font-semibold text-[#EEF1F8]">{dev.name}</div>
+                            <div className="text-xs text-[#6E7891] font-mono">
+                              {dev.address}
+                              {dev.rssi !== undefined ? ` · RSSI ${dev.rssi} dBm` : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <span
+                          className={`w-4 h-4 rounded-full border flex items-center justify-center ${
+                            isSelected ? 'border-[#FF7A2F] bg-[#FF7A2F]' : 'border-white/20'
+                          }`}
+                        >
+                          {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div>
-                  <div className="text-sm font-semibold text-[#EEF1F8]">BrainBit-7F03</div>
-                  <div className="text-xs text-[#6E7891]">Сигнал слабый · заряд 40%</div>
+              ) : (
+                <div className="p-4 rounded-xl bg-[#1A2236] border border-white/10 text-xs text-[#A3ACC2] leading-relaxed">
+                  {scanMessage ||
+                    'Физический BrainBit не обнаружен или адаптер NeuroSDK2 не подключён в этой сборке.'}
                 </div>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <span className="text-xs text-[#FBBF24] font-medium">●●○</span>
-                <span
-                  className={`w-4 h-4 rounded-full border flex items-center justify-center ${
-                    selectedDevice === 'brainbit-2'
-                      ? 'border-[#FF7A2F] bg-[#FF7A2F]'
-                      : 'border-white/20'
-                  }`}
-                >
-                  {selectedDevice === 'brainbit-2' && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-white" />
-                  )}
-                </span>
-              </div>
-            </div>
-          </div>
+              )}
+            </>
+          )}
 
           {/* Action Row */}
           <div className="flex items-center justify-between pt-2">
@@ -355,10 +419,11 @@ export const OnboardingWizard: React.FC = () => {
               <span>Назад</span>
             </button>
             <button
+              disabled={!isSimulator && !deviceStatus.connected && !selectedAddress}
               onClick={() => setOnboardingStep('sensors')}
-              className="flex items-center gap-1.5 px-6 py-2.5 rounded-xl bg-[#FF7A2F] hover:bg-[#ff8944] text-white text-xs font-semibold shadow-[0_4px_16px_rgba(255,122,47,0.35)] transition-all cursor-pointer"
+              className="flex items-center gap-1.5 px-6 py-2.5 rounded-xl bg-[#FF7A2F] hover:bg-[#ff8944] text-white text-xs font-semibold shadow-[0_4px_16px_rgba(255,122,47,0.35)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <span>Подключить</span>
+              <span>{isSimulator ? 'Продолжить в демо-режиме' : 'Подключить'}</span>
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
@@ -423,25 +488,25 @@ export const OnboardingWizard: React.FC = () => {
 
                 {/* Electrodes dots */}
                 {/* T3 */}
-                <circle cx="38" cy="98" r="9" fill="#34D399" />
+                <circle cx="38" cy="98" r="9" fill={isStreamReady && quality.t3 ? '#34D399' : '#F87171'} />
                 <text x="38" y="101" textAnchor="middle" fill="#0B0F1A" fontSize="9" fontWeight="bold">
                   T3
                 </text>
 
                 {/* T4 */}
-                <circle cx="162" cy="98" r="9" fill="#34D399" />
+                <circle cx="162" cy="98" r="9" fill={isStreamReady && quality.t4 ? '#34D399' : '#F87171'} />
                 <text x="162" y="101" textAnchor="middle" fill="#0B0F1A" fontSize="9" fontWeight="bold">
                   T4
                 </text>
 
                 {/* O1 */}
-                <circle cx="75" cy="142" r="9" fill="#34D399" />
+                <circle cx="75" cy="142" r="9" fill={isStreamReady && quality.o1 ? '#34D399' : '#F87171'} />
                 <text x="75" y="145" textAnchor="middle" fill="#0B0F1A" fontSize="9" fontWeight="bold">
                   O1
                 </text>
 
                 {/* O2 */}
-                <circle cx="125" cy="142" r="9" fill="#34D399" />
+                <circle cx="125" cy="142" r="9" fill={isStreamReady && quality.o2 ? '#34D399' : '#F87171'} />
                 <text x="125" y="145" textAnchor="middle" fill="#0B0F1A" fontSize="9" fontWeight="bold">
                   O2
                 </text>
@@ -466,18 +531,19 @@ export const OnboardingWizard: React.FC = () => {
 
             {/* Right Column: Sensor list */}
             <div className="md:col-span-7 space-y-2.5">
-              {[
-                { id: 'T3', name: 'Левый висок', val: `${resistance.t3} кОм` },
-                { id: 'T4', name: 'Правый висок', val: `${resistance.t4} кОм` },
-                { id: 'O1', name: 'Затылок слева', val: `${resistance.o1} кОм` },
-                { id: 'O2', name: 'Затылок справа', val: `${resistance.o2} кОм` },
-              ].map((s) => (
+              {sensorRows.map((s) => (
                 <div
                   key={s.id}
                   className="p-3 rounded-xl bg-[#1A2236] border border-white/5 flex items-center justify-between"
                 >
                   <div className="flex items-center gap-3">
-                    <span className="px-2 py-1 rounded bg-[#34D399]/15 text-[#34D399] font-mono text-xs font-bold">
+                    <span
+                      className={`px-2 py-1 rounded font-mono text-xs font-bold ${
+                        s.ok
+                          ? 'bg-[#34D399]/15 text-[#34D399]'
+                          : 'bg-[#F87171]/15 text-[#F87171]'
+                      }`}
+                    >
                       {s.id}
                     </span>
                     <div>
@@ -485,17 +551,35 @@ export const OnboardingWizard: React.FC = () => {
                       <div className="text-[11px] text-[#6E7891]">сопротивление {s.val}</div>
                     </div>
                   </div>
-                  <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#34D399]/10 text-[#34D399] text-xs font-medium">
-                    <Check className="w-3 h-3 stroke-[3]" />
-                    Хороший контакт
+                  <span
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium ${
+                      s.ok
+                        ? 'bg-[#34D399]/10 text-[#34D399]'
+                        : 'bg-[#F87171]/10 text-[#F87171]'
+                    }`}
+                  >
+                    {s.ok && <Check className="w-3 h-3 stroke-[3]" />}
+                    {s.ok ? 'Хороший контакт' : 'Нет контакта'}
                   </span>
                 </div>
               ))}
 
               {/* Confirmation Banner */}
-              <div className="p-3 rounded-xl bg-[#34D399]/10 border border-[#34D399]/20 flex items-center gap-2 text-xs text-[#34D399] font-medium">
-                <Check className="w-4 h-4 stroke-[3]" />
-                <span>Все 4 датчика на месте. Можно переходить к калибровке.</span>
+              <div
+                className={`p-3 rounded-xl border flex items-center gap-2 text-xs font-medium ${
+                  allContactOk
+                    ? 'bg-[#34D399]/10 border-[#34D399]/20 text-[#34D399]'
+                    : 'bg-[#F87171]/10 border-[#F87171]/25 text-[#FCA5A5]'
+                }`}
+              >
+                {allContactOk && <Check className="w-4 h-4 stroke-[3]" />}
+                <span>
+                  {allContactOk
+                    ? 'Все 4 датчика на месте. Можно переходить к калибровке.'
+                    : isStreamReady
+                      ? 'Проверьте прилегание электродов — контакт должен быть на всех 4 каналах.'
+                      : 'Поток BrainBit не активен. Вернитесь и подключите обруч или выберите демо-режим.'}
+                </span>
               </div>
             </div>
           </div>
@@ -510,8 +594,9 @@ export const OnboardingWizard: React.FC = () => {
               <span>Назад</span>
             </button>
             <button
-              onClick={() => setOnboardingStep('calibrating')}
-              className="flex items-center gap-1.5 px-6 py-2.5 rounded-xl bg-[#FF7A2F] hover:bg-[#ff8944] text-white text-xs font-semibold shadow-[0_4px_16px_rgba(255,122,47,0.35)] transition-all cursor-pointer"
+              disabled={!allContactOk}
+              onClick={handleEnterCalibration}
+              className="flex items-center gap-1.5 px-6 py-2.5 rounded-xl bg-[#FF7A2F] hover:bg-[#ff8944] text-white text-xs font-semibold shadow-[0_4px_16px_rgba(255,122,47,0.35)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <span>Далее: калибровка</span>
               <ChevronRight className="w-4 h-4" />
@@ -593,10 +678,39 @@ export const OnboardingWizard: React.FC = () => {
               </div>
 
               {/* Live Signal Quality */}
-              <div className="flex items-center gap-2 text-xs text-[#34D399] font-medium">
-                <Check className="w-3.5 h-3.5 stroke-[3]" />
-                <span>Качество сигнала: хорошее · артефактов нет</span>
-              </div>
+              {!isStreamReady ? (
+                <div className="p-3 rounded-xl bg-[#F87171]/10 border border-[#F87171]/25 text-xs text-[#FCA5A5] space-y-2">
+                  <div>Поток ЭЭГ не активен — подключите BrainBit или включите демо-режим.</div>
+                  <button
+                    onClick={() => {
+                      updateSettings({ deviceSource: 'simulator' });
+                      startCalibration(30);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-[#FF7A2F] text-white font-semibold cursor-pointer"
+                  >
+                    Включить демо-режим и начать калибровку
+                  </button>
+                </div>
+              ) : (
+                <div
+                  className={`flex items-center gap-2 text-xs font-medium ${
+                    !feedbackState.isContactOk
+                      ? 'text-[#F87171]'
+                      : telemetry?.isArtifact
+                        ? 'text-[#FBBF24]'
+                        : 'text-[#34D399]'
+                  }`}
+                >
+                  <Check className="w-3.5 h-3.5 stroke-[3]" />
+                  <span>
+                    {!feedbackState.isContactOk
+                      ? 'Потерян контакт одного из электродов — запись приостановлена'
+                      : telemetry?.isArtifact
+                        ? 'Обнаружен артефакт (моргание/ЭМГ) — кадры отфильтровываются'
+                        : 'Качество сигнала: хорошее · артефактов нет'}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -684,7 +798,7 @@ export const OnboardingWizard: React.FC = () => {
           {/* Action Row */}
           <div className="flex items-center justify-between pt-2">
             <button
-              onClick={() => setOnboardingStep('calibrating')}
+              onClick={handleEnterCalibration}
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#1A2236] hover:bg-white/10 text-xs font-semibold text-[#EEF1F8] border border-white/10 transition-colors cursor-pointer"
             >
               <RotateCw className="w-3.5 h-3.5" />

@@ -15,6 +15,8 @@ export const DEFAULT_SETTINGS: FocusGlassSettings = {
   blurRadius: 16,
   audioFeedbackEnabled: false,
   glassOpacity: 0.85,
+  feedbackStyle: 'dimming',
+  artifactFilterEnabled: true,
 };
 
 export class BiofeedbackEngine {
@@ -62,6 +64,10 @@ export class BiofeedbackEngine {
   }
 
   private sanitizeSettings(next: FocusGlassSettings): FocusGlassSettings {
+    const validFeedbackStyle =
+      next.feedbackStyle === 'blur' || next.feedbackStyle === 'distracting_only'
+        ? next.feedbackStyle
+        : 'dimming';
     return {
       ...next,
       threshold: Math.max(10, Math.min(95, next.threshold)),
@@ -69,6 +75,8 @@ export class BiofeedbackEngine {
       dimmingMaxOpacity: Math.max(0.05, Math.min(0.95, next.dimmingMaxOpacity)),
       blurRadius: Math.max(0, Math.min(32, next.blurRadius)),
       glassOpacity: Math.max(0.1, Math.min(1.0, next.glassOpacity)),
+      feedbackStyle: validFeedbackStyle,
+      artifactFilterEnabled: next.artifactFilterEnabled ?? true,
     };
   }
 
@@ -115,12 +123,14 @@ export class BiofeedbackEngine {
 
     if (telemetry.isArtifact) {
       this.sessionStats.artifactCount++;
-      this.lastState = {
-        ...this.lastState,
-        isArtifactFrozen: true,
-        isContactOk,
-      };
-      return this.lastState;
+      if (this.settings.artifactFilterEnabled !== false) {
+        this.lastState = {
+          ...this.lastState,
+          isArtifactFrozen: true,
+          isContactOk,
+        };
+        return this.lastState;
+      }
     }
 
     if (!isContactOk) {
