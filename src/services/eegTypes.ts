@@ -110,6 +110,13 @@ export interface SessionStatistics {
   artifactCount: number;
 }
 
+export interface FocusTimelinePoint {
+  time: string;
+  timestamp: number;
+  focus: number;
+  isDip: boolean;
+}
+
 export interface SessionRecord extends SessionStatistics {
   id: string;
   startedAt: string;
@@ -117,6 +124,7 @@ export interface SessionRecord extends SessionStatistics {
   mode: 'concentration' | 'relaxation';
   deviceSource: 'simulator' | 'bluetooth';
   threshold: number;
+  timeline?: FocusTimelinePoint[];
 }
 
 export interface CalibrationResult {
@@ -126,6 +134,8 @@ export interface CalibrationResult {
   confidence: number;
   mode?: 'concentration' | 'relaxation';
   sampleCount?: number;
+  deviceSource?: 'simulator' | 'bluetooth';
+  calibratedAt?: string;
 }
 
 export type PresetState =

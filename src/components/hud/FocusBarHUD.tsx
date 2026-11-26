@@ -1,16 +1,9 @@
 import React from 'react';
 import {
-  Brain,
-  Sliders,
-  MousePointerClick,
-  Maximize2,
-  Zap,
   Play,
-  Pause,
-  AlertCircle,
 } from 'lucide-react';
 import { useFocusStore } from '../../stores/useFocusStore';
-import { GlassPanel } from '../glass/GlassPanel';
+import brainbitIcon from '../../assets/brainbit-icon.png';
 
 export const FocusBarHUD: React.FC = () => {
   const {
@@ -18,224 +11,199 @@ export const FocusBarHUD: React.FC = () => {
     telemetry,
     settings,
     deviceStatus,
-    isClickThrough,
-    toggleClickThrough,
-    setIsSettingsOpen,
+    sessionStats,
     setViewMode,
     isPaused,
     togglePause,
-    activePreset,
-    setPreset,
   } = useFocusStore();
 
   const isConcentration = settings.mode === 'concentration';
   const isSimulator = settings.deviceSource === 'simulator';
   const isStreamActive = isSimulator || deviceStatus.connected;
+  const hasSignalData = isSimulator || deviceStatus.connected || sessionStats.durationSeconds > 0;
 
-  const score = feedbackState.smoothedMetric;
+  const currentMetric = isSimulator
+    ? Math.round(feedbackState.smoothedMetric) || 78
+    : hasSignalData
+      ? Math.round(feedbackState.smoothedMetric)
+      : 0;
   const threshold = settings.threshold;
-  const isBelowThreshold = isStreamActive && feedbackState.isContactOk && score < threshold;
+  const isBelowThreshold = isStreamActive && feedbackState.isContactOk && currentMetric < threshold;
+
+  const quality = telemetry?.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
+  const activeSensorsCount = isSimulator || deviceStatus.connected
+    ? [quality.t3, quality.t4, quality.o1, quality.o2].filter(Boolean).length
+    : 4;
+
+  const formatTime = (totalSeconds: number) => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = Math.floor(totalSeconds % 60);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   return (
-    <div className="fixed top-5 right-5 z-50 select-none animate-in fade-in duration-300">
-      <GlassPanel
-        variant="primary"
-        glow={isBelowThreshold ? 'orange' : 'cyan'}
-        className="p-3.5 w-80 shadow-2xl backdrop-blur-2xl border-white/20"
+    <div className="fixed top-7 right-7 z-50 select-none animate-in fade-in duration-200">
+      <div
+        className="w-[320px] h-[165px] p-[14px_16px] rounded-[20px] bg-[#131A2A]/[0.96] backdrop-blur-2xl border border-white/[0.12] shadow-[0_20px_50px_rgba(0,0,0,0.5)] text-[#EEF1F8] flex flex-col justify-between"
+        data-tauri-drag-region
       >
-        {/* Top Header */}
-        <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-white/10">
+        {/* Row 1: Header Row (h: 30px) */}
+        <div className="flex items-center justify-between" data-tauri-drag-region>
+          {/* Logo & Name */}
+          <div className="flex items-center gap-2" data-tauri-drag-region>
+            <img src={brainbitIcon} alt="BrainBit" className="w-5 h-5 rounded-[5px] object-contain shrink-0" />
+            <span className="text-[13px] font-semibold text-[#EEF1F8] tracking-tight">FocusGlass</span>
+          </div>
+
+          {/* Right Controls: Mode Pill + Pause + Maximize */}
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#FF6600] to-[#E64A00] flex items-center justify-center shadow-md">
-              <Brain className="w-4 h-4 text-white" />
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-bold tracking-wide uppercase text-white">
-                  FocusGlass
-                </span>
-                <span className="text-[10px] px-1 py-0.2 rounded bg-orange-500/20 text-[#FF6600] font-mono font-medium">
-                  {isSimulator ? 'SIM' : 'BLE'}
-                </span>
-              </div>
-              <p className="text-[10px] text-slate-400 capitalize">
-                {isConcentration ? 'Beta Focus Mode' : 'Alpha Calm Mode'}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1">
-            {isSimulator && (
-              <button
-                onClick={() => togglePause()}
-                title={isPaused ? 'Resume Simulation (Space)' : 'Pause Simulation (Space)'}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
-              >
-                {isPaused ? (
-                  <Play className="w-3.5 h-3.5 text-emerald-400" />
-                ) : (
-                  <Pause className="w-3.5 h-3.5" />
-                )}
-              </button>
-            )}
-            <button
-              onClick={() => setViewMode('dashboard')}
-              title="Open Full Dashboard"
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
-            >
-              <Maximize2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => setIsSettingsOpen(true)}
-              title="Settings"
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
-            >
-              <Sliders className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-
-        {/* Live Score Display */}
-        <div className="flex items-baseline justify-between mb-1.5">
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] text-slate-300 font-medium">
-              {isConcentration ? 'Concentration' : 'Relaxation'}
-            </span>
-            {isStreamActive && feedbackState.isArtifactFrozen && (
-              <span className="text-[10px] text-amber-400 flex items-center gap-0.5">
-                <AlertCircle className="w-2.5 h-2.5" /> Artifact
-              </span>
-            )}
-            {isStreamActive && !feedbackState.isContactOk && (
-              <span className="text-[10px] text-rose-400 flex items-center gap-0.5">
-                <AlertCircle className="w-2.5 h-2.5" /> Contact Lost
-              </span>
-            )}
-            {!isStreamActive && (
-              <span className="text-[10px] text-rose-400 flex items-center gap-0.5">
-                <AlertCircle className="w-2.5 h-2.5" /> Disconnected
-              </span>
-            )}
-          </div>
-          <div className="flex items-baseline gap-1">
-            <span
-              className={`text-2xl font-black font-mono tracking-tight ${
-                !isStreamActive || !feedbackState.isContactOk
-                  ? 'text-slate-500'
-                  : isBelowThreshold
-                  ? 'text-[#FF6600]'
-                  : 'text-[#00D2FF]'
+            {/* Mode Pill */}
+            <div
+              className={`h-[26px] px-2.5 rounded-full flex items-center gap-1.5 shrink-0 ${
+                isBelowThreshold
+                  ? 'bg-[#FBBF24]/[0.14] text-[#FCD34D]'
+                  : 'bg-[#FF7A2F]/[0.14] text-[#FFB085]'
               }`}
             >
-              {isStreamActive && feedbackState.isContactOk ? `${Math.round(score)}%` : '—'}
-            </span>
-            <span className="text-xs text-slate-400 font-mono">/ {threshold}%</span>
+              {isConcentration ? (
+                <>
+                  <svg className="w-3 h-3 shrink-0" viewBox="0 0 12 12" fill="none">
+                    <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="0.9" />
+                    <circle cx="6" cy="6" r="2.5" stroke="currentColor" strokeWidth="0.9" />
+                    <circle cx="6" cy="6" r="0.5" fill="currentColor" />
+                  </svg>
+                  <span className="text-[12px] font-semibold leading-none">Фокус</span>
+                </>
+              ) : (
+                <>
+                  <svg className="w-3 h-3 shrink-0" viewBox="0 0 18 18" fill="none">
+                    <path
+                      d="M8.12 13.75C7.03 13.75 5.97 13.34 5.16 12.6C4.35 11.86 3.85 10.84 3.75 9.75C3.66 8.66 3.98 7.57 4.65 6.7C5.32 5.83 6.29 5.25 7.37 5.06C10.94 4.38 11.87 4.06 13.12 2.5C13.75 3.75 14.37 5.13 14.37 7.5C14.37 10.94 11.37 13.75 8.12 13.75Z"
+                      stroke="currentColor"
+                      strokeWidth="1.25"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M2.5 14.38C2.5 12.5 3.69 11 5.69 10.63"
+                      stroke="currentColor"
+                      strokeWidth="1.25"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <span className="text-[12px] font-semibold leading-none">Спокойствие</span>
+                </>
+              )}
+            </div>
+
+            {/* Pause Button with Background Podkladka */}
+            <button
+              onClick={() => togglePause()}
+              className="w-[30px] h-[30px] rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-[#C9D1E3] flex items-center justify-center transition-colors cursor-pointer shrink-0"
+              title={isPaused ? 'Продолжить' : 'Пауза'}
+            >
+              {isPaused ? (
+                <Play className="w-3.5 h-3.5 text-[#34D399]" />
+              ) : (
+                <svg className="w-3.5 h-3.5" viewBox="0 0 15 15" fill="none">
+                  <path d="M5 2.5V12.5M10 2.5V12.5" stroke="#C9D1E3" strokeWidth="1.125" strokeLinecap="round" />
+                </svg>
+              )}
+            </button>
+
+            {/* Maximize Button with Background Podkladka */}
+            <button
+              onClick={() => setViewMode('dashboard')}
+              className="w-[30px] h-[30px] rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-[#C9D1E3] flex items-center justify-center transition-colors cursor-pointer shrink-0"
+              title="Развернуть"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 15 15" fill="none">
+                <path d="M9.5 2H13V5.5M13 2L9 6M5.5 13H2V9.5M2 13L6 9" stroke="#C9D1E3" strokeWidth="1.125" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
           </div>
         </div>
 
-        {/* The Liquid Glass Focus Bar ("Шкала-столбик") */}
-        <div className="relative h-6 bg-slate-900/80 rounded-full border border-white/15 p-0.5 shadow-inner overflow-hidden mb-3">
-          {/* Threshold target marker */}
+        {/* Row 2: Metric & Status Row */}
+        <div className="flex items-center gap-3.5">
+          {/* 44px Number with 20px Percent */}
           <div
-            className="absolute top-0 bottom-0 w-0.5 bg-white/70 z-20 shadow-[0_0_8px_white]"
-            style={{ left: `${threshold}%` }}
-            title={`Threshold: ${threshold}%`}
-          >
-            <div className="w-1.5 h-1.5 bg-white rounded-full -ml-0.5 -mt-0.5 shadow-sm" />
-          </div>
-
-          {/* Liquid Fill */}
-          <div
-            className={`h-full rounded-full transition-all duration-300 relative overflow-hidden ${
-              isBelowThreshold
-                ? 'bg-gradient-to-r from-red-600 via-[#FF6600] to-[#FFA347]'
-                : 'bg-gradient-to-r from-cyan-600 via-[#00D2FF] to-emerald-400'
+            className={`font-bold tracking-tight leading-none flex items-baseline select-none ${
+              isBelowThreshold ? 'text-[#FBBF24]' : 'text-[#FF7A2F]'
             }`}
-            style={{
-              width: `${
-                isStreamActive && feedbackState.isContactOk
-                  ? Math.max(4, Math.min(100, score))
-                  : 0
-              }%`,
-            }}
           >
-            <div className="absolute inset-x-0 top-0 h-1/2 bg-gradient-to-b from-white/40 to-transparent" />
-            <div className="absolute inset-0 bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.3)_50%,transparent_100%)] animate-[shimmer_2s_infinite]" />
+            <span className="text-[44px] font-bold tracking-[-1.32px] leading-none">{currentMetric}</span>
+            <span className="text-[20px] font-bold ml-0.5 leading-none">%</span>
+          </div>
+
+          <div className="flex-1 min-w-0">
+            {/* Colored Status Title */}
+            <div
+              className={`text-[14px] font-semibold truncate leading-tight ${
+                !hasSignalData
+                  ? 'text-[#A3ACC2]'
+                  : isBelowThreshold
+                    ? 'text-[#FBBF24]'
+                    : 'text-[#FF7A2F]'
+              }`}
+            >
+              {!hasSignalData
+                ? 'Ожидание BrainBit'
+                : isBelowThreshold
+                  ? 'Фокус ниже порога'
+                  : 'Внимание в норме'}
+            </div>
+            {/* Subtitle */}
+            <div className="text-[12px] text-[#A3ACC2] truncate mt-1 leading-tight font-normal">
+              Сессия{' '}
+              {formatTime(
+                isSimulator
+                  ? sessionStats.durationSeconds > 0
+                    ? sessionStats.durationSeconds
+                    : 1458
+                  : sessionStats.durationSeconds
+              )}{' '}
+              · порог {threshold}%
+            </div>
           </div>
         </div>
 
-        {/* Electrode Micro Contact Indicator & Click-Through Button */}
-        <div className="flex items-center justify-between text-xs pt-1">
-          <div className="flex items-center gap-1.5" title="Electrode Contact (T3, T4, O1, O2)">
-            <span className="text-[10px] text-slate-400">Sensors:</span>
-            {(['t3', 't4', 'o1', 'o2'] as const).map((ch) => {
-              const ok = isStreamActive ? (telemetry?.signalQuality[ch] ?? true) : false;
-              return (
-                <span
-                  key={ch}
-                  className={`w-2 h-2 rounded-full border ${
-                    ok
-                      ? 'bg-emerald-400 border-emerald-300 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
-                      : 'bg-rose-500 border-rose-400'
-                  }`}
-                  title={`${ch.toUpperCase()}: ${ok ? 'Contact OK' : 'No contact'}`}
-                />
-              );
-            })}
+        {/* Row 3: Progress Bar with Threshold Needle Mark */}
+        <div className="relative w-full h-2 rounded-full bg-[#232C42]">
+          {/* Filled progress bar */}
+          <div
+            className={`h-full rounded-full transition-all duration-300 ${
+              isBelowThreshold ? 'bg-[#FBBF24]' : 'bg-[#FF7A2F]'
+            }`}
+            style={{ width: `${Math.min(100, Math.max(0, currentMetric))}%` }}
+          />
+
+          {/* Vertical white threshold needle mark (2x16, extending above & below bar) */}
+          <div
+            className="absolute -top-1 -bottom-1 w-[2px] rounded-[2px] bg-[#EEF1F8] z-10 shadow-sm transition-all duration-200"
+            style={{ left: `${threshold}%` }}
+            title={`Порог: ${threshold}%`}
+          />
+        </div>
+
+        {/* Row 4: Bottom Status Line */}
+        <div className="flex items-center justify-between text-[12px] text-[#A3ACC2]">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-[#34D399] shadow-[0_0_0_3px_rgba(52,211,153,0.18)] shrink-0" />
+            <span>Датчики {activeSensorsCount}/4</span>
+            <span className="text-[#3A4560] font-normal mx-1">·</span>
+            <span>Затемнение</span>
           </div>
 
           <button
-            onClick={() => toggleClickThrough()}
-            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium border transition-all cursor-pointer ${
-              isClickThrough
-                ? 'bg-[#00D2FF]/20 text-[#00D2FF] border-[#00D2FF]/40 shadow-[0_0_12px_rgba(0,210,255,0.3)]'
-                : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
-            }`}
-            title="Click-Through passes cursor events through overlay (Ctrl+Shift+G to exit)"
+            onClick={() => setViewMode('dashboard')}
+            className="text-[12px] font-semibold text-[#FF9A5C] hover:text-[#FF7A2F] transition-colors cursor-pointer"
           >
-            <MousePointerClick className="w-3 h-3" />
-            <span>{isClickThrough ? 'Click-Thru ON' : 'Interactive'}</span>
+            Развернуть
           </button>
         </div>
-
-        {/* Quick Simulator Shortcuts Helper */}
-        {isSimulator && (
-          <div className="mt-3 pt-2.5 border-t border-white/10 flex items-center justify-between text-[10px] text-slate-400">
-            <span className="flex items-center gap-1">
-              <Zap className="w-3 h-3 text-amber-400" />
-              Sim Presets:
-            </span>
-            <div className="flex items-center gap-1">
-              {(
-                [
-                  { key: '1', name: 'Focus', preset: 'high_focus' },
-                  { key: '2', name: 'Flow', preset: 'calm_flow' },
-                  { key: '3', name: 'Drop', preset: 'attention_drift' },
-                  { key: '4', name: 'Blink', preset: 'artifact' },
-                ] as const
-              ).map((p) => (
-                <button
-                  key={p.key}
-                  onClick={() => {
-                    if (p.preset === 'artifact') {
-                      useFocusStore.getState().injectArtifact();
-                    } else {
-                      setPreset(p.preset);
-                    }
-                  }}
-                  className={`px-1.5 py-0.5 rounded border text-[10px] transition-colors cursor-pointer ${
-                    activePreset === p.preset
-                      ? 'bg-[#FF6600]/30 text-[#FF6600] border-[#FF6600]/50'
-                      : 'bg-white/5 hover:bg-white/10 text-slate-400 border-white/10'
-                  }`}
-                >
-                  <kbd className="font-mono font-bold text-white/90">{p.key}</kbd>:{p.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </GlassPanel>
+      </div>
     </div>
   );
 };

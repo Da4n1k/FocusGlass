@@ -45,15 +45,101 @@ function savePersistedSettings(settings: FocusGlassSettings): void {
   }
 }
 
+function generateSeedHistory(): SessionRecord[] {
+  const now = Date.now();
+  return [
+    {
+      id: `${now - 1000 * 60 * 60 * 2}`,
+      startedAt: new Date(now - 1000 * 60 * 52).toISOString(),
+      endedAt: new Date(now).toISOString(),
+      mode: 'concentration',
+      deviceSource: 'simulator',
+      threshold: 55,
+      durationSeconds: 52 * 60,
+      timeInFocusSeconds: Math.round(52 * 60 * 0.78),
+      timeInDimmingSeconds: Math.round(52 * 60 * 0.22),
+      distractionEventsCount: 5,
+      averageFocusScore: 78,
+      minFocusScore: 42,
+      maxFocusScore: 92,
+      artifactCount: 3,
+    },
+    {
+      id: `${now - 1000 * 60 * 60 * 24}`,
+      startedAt: new Date(now - 1000 * 60 * 60 * 24).toISOString(),
+      endedAt: new Date(now - 1000 * 60 * 60 * 24 + 1000 * 60 * 80).toISOString(),
+      mode: 'concentration',
+      deviceSource: 'simulator',
+      threshold: 55,
+      durationSeconds: 80 * 60,
+      timeInFocusSeconds: Math.round(80 * 60 * 0.74),
+      timeInDimmingSeconds: Math.round(80 * 60 * 0.26),
+      distractionEventsCount: 7,
+      averageFocusScore: 74,
+      minFocusScore: 38,
+      maxFocusScore: 95,
+      artifactCount: 5,
+    },
+    {
+      id: `${now - 1000 * 60 * 60 * 48}`,
+      startedAt: new Date(now - 1000 * 60 * 60 * 48).toISOString(),
+      endedAt: new Date(now - 1000 * 60 * 60 * 48 + 1000 * 60 * 45).toISOString(),
+      mode: 'concentration',
+      deviceSource: 'simulator',
+      threshold: 55,
+      durationSeconds: 45 * 60,
+      timeInFocusSeconds: Math.round(45 * 60 * 0.66),
+      timeInDimmingSeconds: Math.round(45 * 60 * 0.34),
+      distractionEventsCount: 6,
+      averageFocusScore: 66,
+      minFocusScore: 35,
+      maxFocusScore: 88,
+      artifactCount: 4,
+    },
+    {
+      id: `${now - 1000 * 60 * 60 * 53}`,
+      startedAt: new Date(now - 1000 * 60 * 60 * 53).toISOString(),
+      endedAt: new Date(now - 1000 * 60 * 60 * 53 + 1000 * 60 * 38).toISOString(),
+      mode: 'concentration',
+      deviceSource: 'simulator',
+      threshold: 55,
+      durationSeconds: 38 * 60,
+      timeInFocusSeconds: Math.round(38 * 60 * 0.81),
+      timeInDimmingSeconds: Math.round(38 * 60 * 0.19),
+      distractionEventsCount: 2,
+      averageFocusScore: 81,
+      minFocusScore: 48,
+      maxFocusScore: 96,
+      artifactCount: 1,
+    },
+    {
+      id: `${now - 1000 * 60 * 60 * 72}`,
+      startedAt: new Date(now - 1000 * 60 * 60 * 72).toISOString(),
+      endedAt: new Date(now - 1000 * 60 * 60 * 72 + 1000 * 60 * 65).toISOString(),
+      mode: 'concentration',
+      deviceSource: 'simulator',
+      threshold: 55,
+      durationSeconds: 65 * 60,
+      timeInFocusSeconds: Math.round(65 * 60 * 0.58),
+      timeInDimmingSeconds: Math.round(65 * 60 * 0.42),
+      distractionEventsCount: 11,
+      averageFocusScore: 58,
+      minFocusScore: 28,
+      maxFocusScore: 85,
+      artifactCount: 8,
+    },
+  ];
+}
+
 function loadSessionHistory(): SessionRecord[] {
-  if (typeof window === 'undefined' || !window.localStorage) return [];
+  if (typeof window === 'undefined' || !window.localStorage) return generateSeedHistory();
   try {
     const raw = window.localStorage.getItem(SESSIONS_STORAGE_KEY);
-    if (!raw) return [];
+    if (!raw) return generateSeedHistory();
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as SessionRecord[]) : [];
+    return Array.isArray(parsed) && parsed.length > 0 ? (parsed as SessionRecord[]) : generateSeedHistory();
   } catch {
-    return [];
+    return generateSeedHistory();
   }
 }
 
@@ -66,7 +152,53 @@ function saveSessionHistory(records: SessionRecord[]): void {
   }
 }
 
+export interface FocusTimelinePoint {
+  time: string;
+  timestamp: number;
+  focus: number;
+  isDip: boolean;
+}
+
+function generateInitialTimeline(threshold: number): FocusTimelinePoint[] {
+  const points: FocusTimelinePoint[] = [];
+  const now = Date.now();
+  // 24 points spanning the last 10 minutes (each ~25 seconds)
+  const baseCurve = [
+    68, 72, 75, 76, 78, 80, 77, 72, 64, 48, 42, 58, 68, 75, 79, 82, 80, 78, 62, 50, 46, 60, 72, 78
+  ];
+  for (let i = 0; i < baseCurve.length; i++) {
+    const val = baseCurve[i];
+    const ts = now - (baseCurve.length - 1 - i) * 25000;
+    const d = new Date(ts);
+    points.push({
+      time: d.toLocaleTimeString('ru-RU', { minute: '2-digit', second: '2-digit' }),
+      timestamp: ts,
+      focus: val,
+      isDip: val < threshold,
+    });
+  }
+  return points;
+}
+
 interface FocusStoreState {
+  // Navigation & Redesign Screens
+  activeNav: 'session' | 'history' | 'device' | 'settings' | 'onboarding' | 'summary';
+  setActiveNav: (nav: 'session' | 'history' | 'device' | 'settings' | 'onboarding' | 'summary') => void;
+  onboardingStep: 'welcome' | 'connect' | 'sensors' | 'calibrating' | 'done';
+  setOnboardingStep: (step: 'welcome' | 'connect' | 'sensors' | 'calibrating' | 'done') => void;
+  focusTimeline: FocusTimelinePoint[];
+  lastCompletedSession: SessionRecord | null;
+  isSessionEnded: boolean;
+  finishSession: () => void;
+  openSessionSummary: (record: SessionRecord) => void;
+  startNewSession: () => void;
+  isGentleAlertDismissed: boolean;
+  dismissGentleAlert: () => void;
+  settingsSubTab: 'feedback' | 'sensitivity' | 'sound' | 'hotkeys';
+  setSettingsSubTab: (tab: 'feedback' | 'sensitivity' | 'sound' | 'hotkeys') => void;
+  feedbackStyle: 'dimming' | 'blur' | 'distracting_only';
+  setFeedbackStyle: (style: 'dimming' | 'blur' | 'distracting_only') => void;
+
   // Settings
   settings: FocusGlassSettings;
   updateSettings: (newSettings: Partial<FocusGlassSettings>) => void;
@@ -120,6 +252,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
   const initialSettings = loadPersistedSettings();
   let calibrationFrames: EEGTelemetry[] = [];
   let calibrationTimer: ReturnType<typeof setInterval> | null = null;
+  let lastTimelineSample = Date.now();
 
   simulationEngine.subscribe((telemetry, feedbackState, sessionStats) => {
     const state = get();
@@ -128,7 +261,9 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
       calibrationFrames.push(telemetry);
     }
 
+    const isSummaryOrEnded = state.isSessionEnded || state.activeNav === 'summary';
     const shouldPlayAudio =
+      !isSummaryOrEnded &&
       state.settings.audioFeedbackEnabled &&
       feedbackState.isDimmingActive &&
       feedbackState.isContactOk &&
@@ -136,10 +271,37 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
 
     audioFeedback.sync(shouldPlayAudio, feedbackState.audioVolume);
 
+    const now = Date.now();
+    let updatedTimeline = state.focusTimeline;
+    const hasContactSignal =
+      telemetry.signalQuality.t3 ||
+      telemetry.signalQuality.t4 ||
+      telemetry.signalQuality.o1 ||
+      telemetry.signalQuality.o2;
+    const canRecordTimeline =
+      !isSummaryOrEnded &&
+      (state.settings.deviceSource === 'simulator' || hasContactSignal);
+
+    if (canRecordTimeline && now - lastTimelineSample >= 1000) {
+      lastTimelineSample = now;
+      const currentMetric = Math.round(
+        state.settings.mode === 'concentration' ? telemetry.concentration : telemetry.relaxation
+      );
+      const isDip = currentMetric < state.settings.threshold;
+      const newPoint: FocusTimelinePoint = {
+        time: new Date().toLocaleTimeString('ru-RU', { minute: '2-digit', second: '2-digit' }),
+        timestamp: now,
+        focus: currentMetric,
+        isDip,
+      };
+      updatedTimeline = [...state.focusTimeline.slice(-120), newPoint];
+    }
+
     set({
       telemetry,
       feedbackState,
-      sessionStats,
+      sessionStats: state.isSessionEnded ? state.sessionStats : sessionStats,
+      focusTimeline: updatedTimeline,
       activePreset: simulationEngine.getPreset(),
       isPaused: simulationEngine.getIsPaused(),
     });
@@ -164,10 +326,99 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
   });
 
   return {
+    activeNav: 'session',
+    setActiveNav: (nav) => {
+      const state = get();
+      if (nav === 'session' && (state.activeNav === 'summary' || state.isSessionEnded)) {
+        state.startNewSession();
+        return;
+      }
+      set({ activeNav: nav });
+    },
+    onboardingStep: 'welcome',
+    setOnboardingStep: (step) => set({ onboardingStep: step }),
+    focusTimeline:
+      initialSettings.deviceSource === 'bluetooth'
+        ? []
+        : generateInitialTimeline(initialSettings.threshold),
+    lastCompletedSession: null,
+    isSessionEnded: false,
+    isGentleAlertDismissed: false,
+    dismissGentleAlert: () => set({ isGentleAlertDismissed: true }),
+    settingsSubTab: 'feedback',
+    setSettingsSubTab: (tab) => set({ settingsSubTab: tab }),
+    feedbackStyle: 'dimming',
+    setFeedbackStyle: (style) => set({ feedbackStyle: style }),
+
+    finishSession: () => {
+      const { sessionStats, settings, sessionStartedAt, sessionHistory, focusTimeline } = get();
+      const record: SessionRecord = {
+        ...sessionStats,
+        id: `${Date.now()}`,
+        startedAt: sessionStartedAt,
+        endedAt: new Date().toISOString(),
+        mode: settings.mode,
+        deviceSource: settings.deviceSource,
+        threshold: settings.threshold,
+        timeline: [...focusTimeline],
+      };
+      const updatedHistory = [record, ...sessionHistory].slice(0, 50);
+      saveSessionHistory(updatedHistory);
+      audioFeedback.sync(false, 0);
+      get().resetSession(false);
+      set({
+        lastCompletedSession: record,
+        sessionHistory: updatedHistory,
+        activeNav: 'summary',
+        isSessionEnded: true,
+      });
+    },
+
+    openSessionSummary: (record) => {
+      set({
+        lastCompletedSession: record,
+        activeNav: 'summary',
+      });
+    },
+
+    startNewSession: () => {
+      if (simulationEngine.getIsPaused()) {
+        simulationEngine.togglePause();
+      }
+      const isBluetooth = get().settings.deviceSource === 'bluetooth';
+      get().resetSession(false);
+      set({
+        activeNav: 'session',
+        focusTimeline: isBluetooth ? [] : generateInitialTimeline(get().settings.threshold),
+        lastCompletedSession: null,
+        isGentleAlertDismissed: false,
+        isSessionEnded: false,
+        isPaused: false,
+        ...(isBluetooth
+          ? {
+              feedbackState: {
+                currentMetric: 0,
+                smoothedMetric: 0,
+                deficit: 0,
+                overlayOpacity: 0,
+                blurRadius: 0,
+                audioVolume: 0,
+                isDimmingActive: false,
+                isContactOk: false,
+                isArtifactFrozen: false,
+              },
+            }
+          : {}),
+      });
+    },
+
     settings: initialSettings,
 
     updateSettings: (newSettings) => {
       const current = get().settings;
+      const isSwitchingSource =
+        Boolean(newSettings.deviceSource) && newSettings.deviceSource !== current.deviceSource;
+
       simulationEngine.updateSettings(newSettings);
       const updated = simulationEngine.getSettings();
       savePersistedSettings(updated);
@@ -176,14 +427,40 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         audioFeedback.sync(false, 0);
       }
 
-      set({ settings: updated });
-
-      if (newSettings.deviceSource && newSettings.deviceSource !== current.deviceSource) {
+      if (isSwitchingSource) {
         audioFeedback.sync(false, 0);
-        void tauriBridge.setDeviceSource(newSettings.deviceSource).then((deviceStatus) => {
+        simulationEngine.resetSession();
+        const isBluetooth = updated.deviceSource === 'bluetooth';
+        set({
+          settings: updated,
+          sessionStartedAt: new Date().toISOString(),
+          sessionStats: simulationEngine.getSessionStats(),
+          focusTimeline: isBluetooth ? [] : generateInitialTimeline(updated.threshold),
+          isSessionEnded: false,
+          isGentleAlertDismissed: false,
+          ...(isBluetooth
+            ? {
+                feedbackState: {
+                  currentMetric: 0,
+                  smoothedMetric: 0,
+                  deficit: 0,
+                  overlayOpacity: 0,
+                  blurRadius: 0,
+                  audioVolume: 0,
+                  isDimmingActive: false,
+                  isContactOk: false,
+                  isArtifactFrozen: false,
+                },
+              }
+            : {}),
+        });
+        void tauriBridge.setDeviceSource(updated.deviceSource).then((deviceStatus) => {
           set({ deviceStatus });
         });
+        return;
       }
+
+      set({ settings: updated });
     },
 
     viewMode: 'dashboard',
@@ -309,6 +586,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         sessionHistory: updatedHistory,
         sessionStartedAt: new Date().toISOString(),
         sessionStats: simulationEngine.getSessionStats(),
+        ...(settings.deviceSource === 'bluetooth' ? { focusTimeline: [] } : {}),
       });
     },
 
@@ -423,8 +701,12 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
         if (elapsedMs >= totalMs) {
           if (calibrationTimer) clearInterval(calibrationTimer);
           calibrationTimer = null;
-          const activeMode = get().settings.mode;
-          const result = BiofeedbackEngine.calibrateBaseline(calibrationFrames, activeMode);
+          const stateAfter = get();
+          const result: CalibrationResult = {
+            ...BiofeedbackEngine.calibrateBaseline(calibrationFrames, stateAfter.settings.mode),
+            deviceSource: stateAfter.settings.deviceSource,
+            calibratedAt: new Date().toISOString(),
+          };
           calibrationFrames = [];
           set({
             isCalibrating: false,

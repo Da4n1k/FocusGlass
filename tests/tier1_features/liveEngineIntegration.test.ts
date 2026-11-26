@@ -201,15 +201,22 @@ test('Store Integration: useFocusStore propagates settings to live engine and re
   simulationEngine.stepSamples(12);
   assert.strictEqual(store.getState().feedbackState.overlayOpacity, 0, 'Store threshold update reached engine');
 
-  // Switch to bluetooth without hardware -> deviceStatus must report connected = false
+  // Switch to bluetooth without hardware -> deviceStatus must report connected = false and start cleanly from 0
   store.getState().updateSettings({ deviceSource: 'bluetooth' });
   await new Promise((r) => setTimeout(r, 15));
   assert.strictEqual(store.getState().deviceStatus.deviceSource, 'bluetooth');
   assert.strictEqual(store.getState().deviceStatus.connected, false, 'Unlinked BLE must not fake connected=true');
   assert.strictEqual(store.getState().feedbackState.overlayOpacity, 0, 'Overlay cleared when BLE disconnected');
+  assert.strictEqual(store.getState().focusTimeline.length, 0, 'Switching to real headband clears demo curve');
+  assert.strictEqual(store.getState().feedbackState.smoothedMetric, 0, 'Metric starts at 0 in real headband mode');
+  assert.strictEqual(store.getState().sessionStats.durationSeconds, 0, 'Duration starts at 0 in real headband mode');
 
-  // Return to simulator and verify session reset
+  store.getState().startNewSession();
+  assert.strictEqual(store.getState().focusTimeline.length, 0, 'New session in bluetooth mode starts with empty timeline');
+
+  // Return to simulator and verify demo curve + session reset
   store.getState().updateSettings({ deviceSource: 'simulator' });
+  assert.ok(store.getState().focusTimeline.length > 0, 'Simulator mode retains initial demo preview curve');
   simulationEngine.stepSamples(250);
   assert.ok(store.getState().sessionStats.durationSeconds >= 0.9);
   store.getState().resetSession(false);

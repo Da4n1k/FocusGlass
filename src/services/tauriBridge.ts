@@ -164,6 +164,17 @@ class TauriBridge {
     }
   }
 
+  public async toggleMaximizeWindow(): Promise<void> {
+    if (this.isTauriAvailable()) {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        await getCurrentWindow().toggleMaximize();
+      } catch (err) {
+        console.warn('[TauriBridge] Error toggling maximize:', err);
+      }
+    }
+  }
+
   public async closeWindow(): Promise<void> {
     if (this.isTauriAvailable()) {
       try {

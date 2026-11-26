@@ -1,42 +1,53 @@
 @import "tailwindcss";
 
 @theme {
-  --color-brainbit-orange: #FF6600;
-  --color-brainbit-orange-glow: rgba(255, 102, 0, 0.40);
-  --color-focus-cyan: #00D2FF;
-  --color-focus-cyan-glow: rgba(0, 210, 255, 0.35);
-  --color-calm-violet: #8B5CF6;
-  --color-calm-violet-glow: rgba(139, 92, 246, 0.35);
-  --color-glass-surface: rgba(15, 23, 42, 0.75);
-  --color-glass-subtle: rgba(30, 41, 59, 0.50);
-  --color-glass-border: rgba(255, 255, 255, 0.12);
-  --color-glass-highlight: rgba(255, 255, 255, 0.35);
-  --font-sans: 'Figtree', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --color-focus-orange: #FF7A2F;
+  --color-focus-orange-glow: rgba(255, 122, 47, 0.40);
+  --color-brainbit-orange: #FF7A2F;
+  --color-brainbit-orange-glow: rgba(255, 122, 47, 0.40);
+  --color-calm-purple: #9B8CFF;
+  --color-calm-violet: #9B8CFF;
+  --color-calm-violet-glow: rgba(155, 140, 255, 0.35);
+  --color-info-blue: #38BDF8;
+  --color-focus-cyan: #38BDF8;
+  --color-focus-cyan-glow: rgba(56, 189, 248, 0.35);
+  --color-success-green: #34D399;
+  --color-warning-amber: #FBBF24;
+  --color-danger-red: #F87171;
+  --color-surface-base: #0B0F1A;
+  --color-surface-card: #131A2A;
+  --color-surface-field: #1A2236;
+  --color-text-primary: #EEF1F8;
+  --color-text-secondary: #A3ACC2;
+  --color-text-tertiary: #6E7891;
+  --color-glass-surface: rgba(19, 26, 42, 0.75);
+  --color-glass-subtle: rgba(26, 34, 54, 0.50);
+  --color-glass-border: rgba(255, 255, 255, 0.08);
+  --color-glass-highlight: rgba(255, 255, 255, 0.20);
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 :root {
-  --dashboard-bg: #0b0f19;
-  --dashboard-ambient-cyan: rgba(0, 210, 255, 0.09);
-  --dashboard-ambient-violet: rgba(139, 92, 246, 0.08);
-  --dashboard-ambient-orange: rgba(255, 102, 0, 0.06);
-  --glass-bg-primary: rgba(11, 15, 25, 0.75);
-  --glass-bg-card: rgba(26, 34, 53, 0.55);
-  --glass-border: rgba(255, 255, 255, 0.12);
-  --glass-border-highlight: rgba(255, 255, 255, 0.35);
-  --glass-specular-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.25);
-  --glass-drop-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.75);
-  --glass-blur-filter: blur(24px) saturate(190%) contrast(105%);
+  --dashboard-bg: #0B0F1A;
+  --dashboard-ambient-orange: rgba(255, 122, 47, 0.06);
+  --dashboard-ambient-blue: rgba(56, 189, 248, 0.05);
+  --dashboard-ambient-purple: rgba(155, 140, 255, 0.05);
+  --glass-bg-primary: rgba(19, 26, 42, 0.85);
+  --glass-bg-card: rgba(19, 26, 42, 0.70);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-highlight: rgba(255, 255, 255, 0.25);
+  --glass-specular-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.15);
+  --glass-drop-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.60);
+  --glass-blur-filter: blur(20px) saturate(180%);
 }
 
-/* Opaque dashboard foundation; never applied to the desktop HUD/overlay.
-   Glass cards refract this controlled backdrop rather than arbitrary windows. */
 .dashboard-surface {
   background-color: var(--dashboard-bg);
   background-image:
-    radial-gradient(ellipse at 8% 0%, var(--dashboard-ambient-cyan), transparent 50%),
-    radial-gradient(ellipse at 95% 35%, var(--dashboard-ambient-violet), transparent 55%),
-    radial-gradient(ellipse at 35% 100%, var(--dashboard-ambient-orange), transparent 50%);
+    radial-gradient(ellipse at 12% 0%, var(--dashboard-ambient-orange), transparent 50%),
+    radial-gradient(ellipse at 88% 25%, var(--dashboard-ambient-blue), transparent 45%),
+    radial-gradient(ellipse at 50% 100%, var(--dashboard-ambient-purple), transparent 50%);
 }
 
 /* Custom Liquid Glass utilities */
@@ -120,3 +131,34 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.25);
 }
+
+/* Custom Range Slider matching Figma */
+input[type="range"].figma-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 9999px;
+  height: 8px;
+  outline: none;
+  background-color: #232C42;
+}
+input[type="range"].figma-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #FFFFFF;
+  cursor: pointer;
+  box-shadow: 0 0 0 5px rgba(255, 122, 47, 0.25), 0 2px 6px rgba(0, 0, 0, 0.5);
+  border: none;
+}
+input[type="range"].figma-slider::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #FFFFFF;
+  cursor: pointer;
+  box-shadow: 0 0 0 5px rgba(255, 122, 47, 0.25), 0 2px 6px rgba(0, 0, 0, 0.5);
+  border: none;
+}
+
