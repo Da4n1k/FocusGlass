@@ -149,6 +149,12 @@ export class BiofeedbackEngine {
     };
   }
 
+  /** Clear feedback without counting a fabricated sample or a focus event. */
+  public suspendFeedback(): void {
+    this.clearSmoothingWindow();
+    this.lastState = { ...this.lastState, isContactOk: false };
+  }
+
   public resetSession(): void {
     this.metricBuffer = [];
     this.isCurrentlyDimmed = false;
@@ -162,29 +168,23 @@ export class BiofeedbackEngine {
       telemetry.resistanceKOhm
     );
 
+    const metric = this.settings.mode === 'concentration'
+      ? telemetry.concentration : telemetry.relaxation;
+    const metricValid = Number.isFinite(metric) && metric >= 0 && metric <= 100;
+
+    // Invalid contact must win over artifact hold: never preserve dimming on a
+    // detached sensor, even if the same packet is also flagged as an artifact.
+    if (!isContactOk || !metricValid) {
+      this.suspendFeedback();
+      return this.lastState;
+    }
+
     if (telemetry.isArtifact) {
       this.sessionStats.artifactCount++;
       this.lastState = {
         ...this.lastState,
         isArtifactFrozen: true,
         isContactOk,
-      };
-      return this.lastState;
-    }
-
-    if (!isContactOk) {
-      // Pause biofeedback dimming on skin contact loss so a slipped headband
-      // neither darkens the screen nor pollutes the moving-average buffer.
-      this.isCurrentlyDimmed = false;
-      this.lastState = {
-        ...this.lastState,
-        deficit: 0,
-        overlayOpacity: 0,
-        blurRadius: 0,
-        audioVolume: 0,
-        isDimmingActive: false,
-        isContactOk: false,
-        isArtifactFrozen: false,
       };
       return this.lastState;
     }

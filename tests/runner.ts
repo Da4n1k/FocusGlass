@@ -15,6 +15,7 @@ const testFiles = [
   resolve('tests/tier1_features/electrodeQuality.test.ts'),
   resolve('tests/tier1_features/headbandFitCheck.test.ts'),
   resolve('tests/tier1_features/liveEngineIntegration.test.ts'),
+  resolve('tests/tier1_features/signalSafety.test.ts'),
   resolve('tests/tier1_features/eegSignalProcessor.test.ts'),
   resolve('tests/tier1_features/eegRecording.test.ts'),
   resolve('tests/tier1_features/settingsValidation.test.ts'),
