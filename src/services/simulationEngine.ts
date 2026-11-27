@@ -13,6 +13,12 @@ import type {
 import { BiofeedbackEngine, DEFAULT_SETTINGS } from './biofeedbackEngine';
 import { EEGSignalProcessor } from './eegSignalProcessor';
 
+/** Software timeout, not a physiological or manufacturer limit. */
+export const LIVE_SIGNAL_TIMEOUT_MS = 1500;
+
+const monotonicNow = (): number =>
+  typeof performance !== 'undefined' ? performance.now() : Date.now();
+
 type TelemetrySubscriber = (
   telemetry: EEGTelemetry,
   state: BiofeedbackFeedbackState,
@@ -52,7 +58,10 @@ export class SimulationEngine {
   private simulatorSampleListener: ((samples: EEGTelemetry[]) => void) | null = null;
   private rawBatchBuffer: EEGTelemetry[] = [];
 
-  constructor() {
+  private lastLiveArrivalMs: number | null = null;
+  private liveSignalExpired = false;
+
+  constructor(private readonly nowMs: () => number = monotonicNow) {
     this.setupKeyboardShortcuts();
   }
 
@@ -120,6 +129,8 @@ export class SimulationEngine {
       const elapsedMs = Math.max(0, now - lastTickAt);
       lastTickAt = now;
 
+      this.checkLiveSignal();
+
       if (this.isPaused || this.settings.deviceSource !== 'simulator') {
         sampleDebt = 0;
         return;
@@ -176,6 +187,7 @@ export class SimulationEngine {
    * Entry point for full EEGTelemetry packets (e.g. NeuroSDK2 + EmotionalMath).
    */
   public ingestExternalTelemetry(telemetry: EEGTelemetry): BiofeedbackFeedbackState {
+    this.markLiveArrival();
     let enriched = telemetry;
     if (!telemetry.spectrum) {
       const snap = this.signalProcessor.processSample(
@@ -224,6 +236,7 @@ export class SimulationEngine {
     if (packets.length === 0) {
       return this.biofeedback.getLastState();
     }
+    this.markLiveArrival();
     let latestState = this.biofeedback.getLastState();
     for (const packet of packets) {
       const quality = packet.signalQuality ?? { t3: true, t4: true, o1: true, o2: true };
@@ -246,11 +259,44 @@ export class SimulationEngine {
     return latestState;
   }
 
+  private markLiveArrival(): void {
+    if (this.settings.deviceSource !== 'bluetooth' || this.recordingPlaybackActive) return;
+    this.lastLiveArrivalMs = this.nowMs();
+    this.liveSignalExpired = false;
+  }
+
+  /**
+   * Fail open on a silent BLE/SDK stream. Called by the engine timer; public so
+   * the boundary can also be tested with an injected clock, without sleeping.
+   * The status notification is not added to raw EEG or session statistics.
+   */
+  public checkLiveSignal(): boolean {
+    if (this.settings.deviceSource !== 'bluetooth' || this.recordingPlaybackActive ||
+        this.lastLiveArrivalMs === null || this.liveSignalExpired || !this.latestTelemetry ||
+        this.nowMs() - this.lastLiveArrivalMs < LIVE_SIGNAL_TIMEOUT_MS) return false;
+
+    this.liveSignalExpired = true;
+    this.biofeedback.suspendFeedback();
+    this.signalProcessor.reset();
+    const telemetry: EEGTelemetry = {
+      ...this.latestTelemetry,
+      signalQuality: { t3: false, t4: false, o1: false, o2: false },
+      resistanceKOhm: { t3: null, t4: null, o1: null, o2: null },
+      isArtifact: false,
+    };
+    this.latestTelemetry = telemetry;
+    this.notify(telemetry, this.biofeedback.getLastState(), this.biofeedback.getSessionStats());
+    return true;
+  }
+
   /**
    * Publishes live Fit Check impedance updates (`CommandStartResist`) to UI subscribers
    * while keeping dimming and audio biofeedback safely suspended.
    */
   public applyBrainBitResistUpdate(update: BrainBitResistUpdate): void {
+    this.lastLiveArrivalMs = null;
+    this.liveSignalExpired = false;
+    this.biofeedback.suspendFeedback();
     const allOk =
       update.signalQuality.t3 &&
       update.signalQuality.t4 &&
@@ -320,6 +366,8 @@ export class SimulationEngine {
     this.settings = { ...this.biofeedback.getSettings() };
 
     if (prevSource !== this.settings.deviceSource) {
+      this.lastLiveArrivalMs = null;
+      this.liveSignalExpired = false;
       this.signalProcessor.reset();
     }
 
@@ -411,6 +459,8 @@ export class SimulationEngine {
 
   public setRecordingPlaybackActive(active: boolean): void {
     this.recordingPlaybackActive = active;
+    this.lastLiveArrivalMs = null;
+    this.liveSignalExpired = false;
   }
 
   public resetRecordedSignalPipeline(): void {

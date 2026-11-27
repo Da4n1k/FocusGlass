@@ -262,7 +262,7 @@ export const useFocusStore = create<FocusStoreState>((set, get) => {
     const isSimulator = settings.deviceSource === 'simulator';
     const streamActive = isSimulator || deviceStatus.connected;
     const isFitCheckActive = !isSimulator && deviceStatus.streamMode === 'resist';
-    const hardClear = !streamActive || isFitCheckActive;
+    const hardClear = !streamActive || isFitCheckActive || !feedbackState.isContactOk;
     const canDim = !hardClear && feedbackState.isContactOk && feedbackState.isDimmingActive;
     latestOverlayVisuals = overlayStabilizer.update(
       {
