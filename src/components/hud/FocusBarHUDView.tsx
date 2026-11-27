@@ -69,7 +69,12 @@ export const FocusBarHUDView = React.forwardRef<HTMLDivElement, FocusBarHUDViewP
     const isBelowThreshold = hasSignal && metric < threshold;
 
     return (
-      <div ref={ref} className="fixed top-5 right-5 z-50 select-none animate-in fade-in duration-300">
+      <div
+        ref={ref}
+        // A standalone native HUD must fit the card, not a transparent shadow
+        // gutter: the compositor excludes this window's bounds from our blur.
+        className={`fixed ${dragRegion ? 'top-0 right-0' : 'top-5 right-5'} z-50 select-none animate-in fade-in duration-300`}
+      >
         <GlassPanel
           variant="primary"
           glow={isBelowThreshold ? 'orange' : 'cyan'}

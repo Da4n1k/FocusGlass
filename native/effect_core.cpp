@@ -18,7 +18,8 @@ std::vector<QRectF> visibleProtectedRects(const std::vector<SurfaceMask> &surfac
     for (auto it = surfaces.rbegin(); it != surfaces.rend(); ++it) {
         if (it->rect.isEmpty()) continue;
         if (it->protect) {
-            const QRegion visible = QRegion(it->rect.adjusted(-3,-3,3,3).toAlignedRect()).subtracted(covered);
+            const QRegion visible = it->protection.value_or(
+                QRegion(it->rect.toAlignedRect())).subtracted(covered);
             for (const auto &rect : visible) result.emplace_back(rect);
         }
         covered += it->opaque.value_or(QRegion(it->rect.toAlignedRect()));
@@ -90,7 +91,9 @@ bool ControlServer::running() const { return amount > 0.001; }
 QJsonObject ControlServer::status() const
 {
     return {{"ok", error.isEmpty()}, {"error", error}, {"backend", backend},
+        {"protocolVersion", 2},
         {"active", running()}, {"frames", double(frames)}, {"protectedWindows", protectedWindows},
+        {"ownerPid", double(ownerPid)}, {"protectedControls", protectedControls},
         {"radius", radius}, {"amount", amount}, {"elapsed", elapsed}, {"particles", true}, {"cursorInteraction", true},
         {"diagnostics", diagnostics}};
 }
@@ -121,8 +124,10 @@ QJsonObject ControlServer::handle(const QJsonObject &request, qint64 peerPid)
         previewUntil = clock.elapsed() + 3000;
         ownerPid = peerPid;
         radius = previewRadius;
-        // Preview is a 3-second renderer check, not a replay of the 4.16-second intro.
-        elapsed = std::max(elapsed, 3.2);
+        // User preview follows the same introduction as real feedback. Only an
+        // explicit diagnostic probe skips it to inspect the settled renderer.
+        diagnosticPreview = operation == "diagnose";
+        elapsed = diagnosticPreview ? 3.2 : 0;
     } else if (operation == "stop") {
         target = 0;
         previewUntil = 0;
@@ -143,7 +148,7 @@ void ControlServer::tick()
     radius = now < previewUntil ? previewRadius : requestedRadius;
     const double wanted = now < previewUntil ? 1.0
         : now - heartbeat < 1500 && requestedRadius > 0 ? target : 0;
-    if (wanted > 0 && !wasRunning) elapsed = now < previewUntil ? 3.2 : 0;
+    if (wanted > 0 && !wasRunning) elapsed = diagnosticPreview && now < previewUntil ? 3.2 : 0;
     wasRunning = wanted > 0 || running();
     if (!frozen || wanted == 0) {
         if (wanted > 0) elapsed += dt;
@@ -159,6 +164,16 @@ static float hash(int x, int y)
     quint32 v = quint32(x) * 374761393u + quint32(y) * 668265263u + 0x9e3779b9u;
     v = (v ^ (v >> 13)) * 1274126177u;
     return float(v ^ (v >> 16)) / float(UINT32_MAX);
+}
+
+double revealOpacity(QPointF normalizedPosition, double elapsed, bool blur)
+{
+    // Diagonal front travels for 1.7 s. Dots lead the local blur by 450 ms;
+    // the last pixel reaches full blur at 2.7 s, with no hard wipe edge.
+    const double arrival = (normalizedPosition.x() + normalizedPosition.y()) * 0.85;
+    const double t = std::clamp((elapsed - arrival - (blur ? 0.45 : 0.0))
+        / (blur ? 0.55 : 0.30), 0.0, 1.0);
+    return t*t*(3-2*t);
 }
 
 void ParticleField::resize(const QSize &logicalSize)
@@ -184,9 +199,12 @@ void ParticleField::update(double dt, double elapsed, QPointF cursor, bool froze
         QPointF acceleration = (home - p.position) * 28;
         const QPointF delta = p.position - cursor;
         const double distance = std::hypot(delta.x(), delta.y());
-        if (distance < 115 && distance > 0.5) {
-            const double falloff = 1 - distance / 115;
-            acceleration += delta / distance * (55 * 28 * falloff * falloff);
+        if (distance < 180) {
+            const double falloff = 1 - distance / 180;
+            // Stable direction even when the pointer sits exactly on a dot.
+            const QPointF direction = distance > 0.5 ? delta / distance
+                : QPointF(std::cos(p.seed), std::sin(p.seed));
+            acceleration += direction * (180 * 28 * falloff * falloff);
         }
         p.velocity = (p.velocity + acceleration * dt) * std::exp(-8 * dt);
         p.position += p.velocity * dt;
@@ -237,9 +255,11 @@ void main() {
         if (position.x >= r.x && position.y >= r.y && position.x < r.x+r.z && position.y < r.y+r.w)
             discard;
     }
-    // Feedback must start on threshold crossing, not after the optional particle
-    // introduction. Mix with the sharp scene only while fading, never at rest.
-    float alpha = clamp(amount, 0.0, 1.0);
+    // Same logical-coordinate timeline on X11 and Wayland: dots first, then a
+    // soft blur front, top-left to bottom-right, fully settled after 2.7 s.
+    float arrival = (local.x / outputRect.z + local.y / outputRect.w) * 0.85;
+    float reveal = smoothstep(arrival + 0.45, arrival + 1.0, elapsed);
+    float alpha = clamp(amount, 0.0, 1.0) * reveal;
     vec3 soft = texture(blurred, uv).rgb;
     // A gentle neutral glass veil, not an opaque grey wall.
     soft = mix(soft, vec3(0.88,0.93,1.0), 0.015);
@@ -455,17 +475,16 @@ void Renderer::render(GLuint source, const QSize &sourceSize, const QRectF &rect
     field.resize(rect.size().toSize());
     if (elapsed < previousElapsed) field.reset();
     previousElapsed = elapsed;
-    // The ambient field inherits the wave anchors 1.2 s after the 2.96 s front.
-    if (elapsed >= 4.16) field.update(dt, elapsed, cursor - rect.topLeft(), frozen);
+    field.update(dt, elapsed, cursor - rect.topLeft(), frozen);
     std::vector<float> vertices;
     for (const auto &p : field.points()) {
         if (std::any_of(protectedRects.begin(), protectedRects.end(), [&](const auto &r) {
             return r.adjusted(-3, -3, 3, 3).contains(p.position + rect.topLeft());
         })) continue;
-        const double diagonal = p.home.x()/rect.width() + p.home.y()/rect.height();
-        const double visibility = std::clamp((elapsed * (2.0/3.2) - diagonal) / 0.08, 0.0, 1.0);
+        const double visibility = revealOpacity(
+            {p.home.x()/rect.width(), p.home.y()/rect.height()}, elapsed, false);
         vertices.insert(vertices.end(), {float(p.position.x()), float(p.position.y()),
-            float(p.alpha * visibility * std::min(1.0, amount*2) * 0.55)});
+            float(p.alpha * visibility * std::min(1.0, amount*2) * 0.75)});
     }
     glUseProgram(pointProgram);
     glUniformMatrix4fv(glGetUniformLocation(pointProgram, "transform"), 1, GL_FALSE, outputTransform.constData());

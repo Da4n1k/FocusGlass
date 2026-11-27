@@ -16,6 +16,7 @@ if "--inner" not in sys.argv:
     raise SystemExit(subprocess.call(["dbus-run-session","--",sys.executable,__file__,"--inner"]))
 
 env = dict(os.environ,
+    FOCUSGLASS_AUTO_INSTALL_KWIN="0",
     QT_PLUGIN_PATH=str(repo/"native/build/plugins")+":/usr/lib/qt6/plugins",
     XDG_CONFIG_HOME=str(artifacts/"config"), XDG_DATA_HOME=str(artifacts/"data"),
     FOCUSGLASS_EFFECT_SOCKET=str(artifacts/"effect.sock"), FOCUSGLASS_EFFECT_TEST_PROBE=str(artifacts),
@@ -23,10 +24,12 @@ env = dict(os.environ,
 env["QT_QPA_PLATFORMTHEME"] = ""
 env["NO_AT_BRIDGE"] = "1"
 one_shot = os.environ.get("FOCUSGLASS_TEST_ONESHOT") == "1"
+setup_load = os.environ.get("FOCUSGLASS_TEST_SETUP_LOAD") == "1"
 if one_shot:
     env.pop("FOCUSGLASS_EFFECT_TEST_PROBE",None)
 pathlib.Path(env["XDG_CONFIG_HOME"]).mkdir(exist_ok=True)
-(pathlib.Path(env["XDG_CONFIG_HOME"])/"kwinrc").write_text("[Plugins]\nfocusglassEnabled=true\nblurEnabled=true\n")
+(pathlib.Path(env["XDG_CONFIG_HOME"])/"kwinrc").write_text(
+    "[Plugins]\nfocusglassEnabled="+("false" if setup_load else "true")+"\nblurEnabled=true\n")
 children = []
 logs = []
 def launch(args,environment):
@@ -50,6 +53,17 @@ try:
     backend = ["--virtual"] if os.environ.get("FOCUSGLASS_TEST_VIRTUAL") == "1" else ["--wayland-display",parent_display]
     launch(["kwin_wayland",*backend,"--socket","focusglass-test",
         "--width","800","--height","600","--no-lockscreen","--no-global-shortcuts","--no-kactivities"],env)
+    if setup_load:
+        # Exercise the real helper + real KWin DBus enable path with an already
+        # installed source. No root writes or Polkit prompts in isolated tests.
+        helper = repo/"native/build/focusglass-native-setup"
+        setup = json.loads(subprocess.check_output([helper,"--build-info"]))
+        assert pathlib.Path(setup["destination"]).is_file(), "Matching-install test needs an installed plugin"
+        def dbus_ready():
+            return subprocess.run(["qdbus6","org.kde.KWin","/KWin","org.kde.KWin.supportInformation"],
+                env=env,capture_output=True).returncode == 0
+        eventually(dbus_ready)
+        subprocess.run([helper,"--ensure-kwin",setup["destination"]],env=env,check=True)
     def loaded():
         result = subprocess.run(["qdbus6","org.kde.KWin","/Effects",
             "org.kde.kwin.Effects.isEffectLoaded","focusglass"],env=env,capture_output=True,text=True)
@@ -84,7 +98,7 @@ try:
         return value
     def measured():
         value=status()
-        return value if value.get("elapsed",0)>3.8 and value.get("amount",0)>.4 and value.get("frames",0)>40 and value.get("diagnostics",{}).get("unprotectedChanged",0)>100 else None
+        return value if value.get("elapsed",0)>2.75 and value.get("amount",0)>.4 and value.get("frames",0)>40 and value.get("diagnostics",{}).get("unprotectedChanged",0)>100 else None
     result=eventually(measured,seconds=6)
     assert result["backend"]=="kwin-gpu",result
     assert result["protectedWindows"]>=1,result

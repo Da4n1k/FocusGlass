@@ -96,7 +96,7 @@ fn restore_control(app: &AppHandle) {
 fn setup(app: &AppHandle, restore_shortcut: Shortcut) -> AppResult<()> {
     #[cfg(target_os = "linux")]
     {
-        app.manage(linux_blur::LinuxBlur::start());
+        app.manage(linux_blur::LinuxBlur::start(app.path().resource_dir().ok()));
         let main = app.get_webview_window(overlay::MAIN_LABEL)
             .ok_or(crate::error::AppError::WindowNotFound(overlay::MAIN_LABEL))?;
         main.with_webview(|platform| {

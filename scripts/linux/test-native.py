@@ -176,7 +176,16 @@ try:
         return window
     foreign = pattern(40,40,360,300,424242)
     protected = pattern(480,60,260,240,os.getpid())
-    panel = pattern(0,550,800,50,424242,True)
+    panel = pattern(0,520,800,80,424242,True)
+    # A dock buffer can include 30 px of shadow/autohide padding. Only the
+    # bottom 50 px is interactive; the margin must remain part of the blur.
+    class XRectangle(C.Structure):
+        _fields_=[("x",C.c_short),("y",C.c_short),("width",C.c_ushort),("height",C.c_ushort)]
+    shape=C.CDLL("libXext.so.6")
+    shape.XShapeCombineRectangles.argtypes=[D,W,C.c_int,C.c_int,C.c_int,
+        C.POINTER(XRectangle),C.c_int,C.c_int,C.c_int]
+    panel_input=XRectangle(0,30,800,50)
+    shape.XShapeCombineRectangles(display,panel,2,0,0,C.byref(panel_input),1,0,0)
     configure("XSelectInput",[D,W,C.c_long])(display,protected,4) # ButtonPressMask
     sync(display,0)
     if fly:
@@ -230,11 +239,11 @@ try:
             translate(display,window,root,0,0,C.byref(xx),C.byref(yy),C.byref(child))
             return xx.value,yy.value
         eventually(lambda:location(protected)[0]>400)
-        paint_pattern(foreign,360,300);paint_pattern(protected,260,240);paint_pattern(panel,800,50)
+        paint_pattern(foreign,360,300);paint_pattern(protected,260,240);paint_pattern(panel,800,80)
         sync(display,0)
     else:
         def location(window):
-            return (40,40) if window==foreign else (480,60) if window==protected else (0,550)
+            return (40,40) if window==foreign else (480,60) if window==protected else (0,520)
     # XGetImage/XGetPixel operate on this disposable Xvfb display only.
     get_image = configure("XGetImage",[D,W,C.c_int,C.c_int,C.c_uint,C.c_uint,W,C.c_int],D)
     get_pixel = configure("XGetPixel",[D,C.c_int,C.c_int],W)
@@ -245,7 +254,8 @@ try:
         result = {}
         fx,fy=location(foreign);px,py=location(protected);dx,dy=location(panel)
         for name,(left,top,width,height) in {
-            "foreign":(fx+40,fy+40,240,160),"protected":(px+30,py+30,180,140),"panel":(dx+80,dy+10,240,20)
+            "foreign":(fx+40,fy+40,240,160),"protected":(px+30,py+30,180,140),
+            "panel":(dx+80,dy+40,240,20),"panel_margin":(dx+80,dy+5,240,20)
         }.items():
             result[name] = [get_pixel(image,px,py)&0xffffff
                 for py in range(top,top+height,5) for px in range(left,left+width,5)]
@@ -288,9 +298,11 @@ try:
     changed = sum(a!=b for a,b in zip(baseline["foreign"],blurred["foreign"]))
     own_changed = sum(a!=b for a,b in zip(baseline["protected"],blurred["protected"]))
     panel_changed = sum(a!=b for a,b in zip(baseline["panel"],blurred["panel"]))
+    margin_changed = sum(a!=b for a,b in zip(baseline["panel_margin"],blurred["panel_margin"]))
     assert changed > len(baseline["foreign"])*0.5, ("no actual screen blur",changed,status)
     assert own_changed == 0, ("own window blurred",own_changed)
     assert panel_changed == 0, ("panel blurred",panel_changed)
+    assert margin_changed > len(baseline["panel_margin"])*.5, ("oversized sharp bottom margin",margin_changed)
     # A real injected click must reach the window below the noninteractive overlay.
     assert request({"op":"status"})["active"], "Preview ended before input tests"
     xt = C.CDLL("libXtst.so.6")
@@ -321,12 +333,19 @@ try:
     save_scene("restored.png")
     activated_at=time.monotonic()
     request({"op":"update","amount":1,"radius":8,"frozen":False})
-    eventually(lambda:request({"op":"status"})["amount"]>.9,seconds=1)
-    immediate=samples()
+    while time.monotonic()-activated_at < .35:
+        request({"op":"update","amount":1,"radius":8,"frozen":False})
+        time.sleep(.03)
+    early=samples()
+    early_changed=sum(a!=b for a,b in zip(baseline["foreign"],early["foreign"]))
+    assert early_changed<len(baseline["foreign"])*.1, "blur appeared before the particle front"
+    while time.monotonic()-activated_at < 2.75:
+        request({"op":"update","amount":1,"radius":8,"frozen":False})
+        time.sleep(.03)
+    settled=samples()
     activation_latency=time.monotonic()-activated_at
-    immediate_changed=sum(a!=b for a,b in zip(baseline["foreign"],immediate["foreign"]))
-    assert activation_latency<1.5,("threshold feedback delayed",activation_latency)
-    assert immediate_changed>len(baseline["foreign"])*.5, "normal feedback waited for the particle introduction"
+    settled_changed=sum(a!=b for a,b in zip(baseline["foreign"],settled["foreign"]))
+    assert settled_changed>len(baseline["foreign"])*.5, "diagonal introduction did not reach full blur"
     request({"op":"stop"})
     eventually(lambda:not request({"op":"status"})["active"],seconds=3)
     eventually(restored)
@@ -334,9 +353,9 @@ try:
         "window_manager":"fly-wm 2.43.9+ci12 / Astra Common packages" if fly else "none (Xvfb + picom)",
         "managed_fixtures":bool(managed()) if fly else None,
         "protected_windows":status["protectedWindows"],"blurred_samples_changed":changed,
-        "own_window_changed":own_changed,"panel_changed":panel_changed,
+        "own_window_changed":own_changed,"panel_changed":panel_changed,"panel_margin_blurred":margin_changed,
         "click_through":bool(delivered),"keyboard_through":bool(key_delivered),"preview_cleared":bool(stopped),
-        "threshold_visible_within_seconds":round(activation_latency,3),
+        "intro_settled_seconds":round(activation_latency,3),"early_blur_changed_samples":early_changed,
         "scene_restored":final["foreign"]==baseline["foreign"]}
     (artifacts/"results.json").write_text(json.dumps(report,indent=2))
     print(json.dumps(report,indent=2),flush=True)

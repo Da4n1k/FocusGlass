@@ -122,7 +122,22 @@ public:
                     *opaque += local.intersected(QRect(0,0,attrs.width,attrs.height)).translated(attrs.x,attrs.y);
                 }
             }
-            surfaces.push_back({rectangle,isProtected(window, ownerPid, 0),opaque});
+            std::optional<QRegion> protection;
+            const auto types = property(display, window, typeAtom, XA_ATOM);
+            if (std::find(types.begin(), types.end(), dockAtom) != types.end()) {
+                int count = 0, ordering = 0;
+                lastXError = 0;
+                auto *rects = XShapeGetRectangles(display, window, ShapeInput, &count, &ordering);
+                if (!lastXError) {
+                    QRegion input;
+                    for (int n = 0; n < count; ++n)
+                        input += QRect(attrs.x + rects[n].x, attrs.y + rects[n].y,
+                            rects[n].width, rects[n].height);
+                    protection = input.intersected(QRegion(rectangle.toAlignedRect()));
+                }
+                if (rects) XFree(rects);
+            }
+            surfaces.push_back({rectangle,isProtected(window, ownerPid, 0),opaque,protection});
             XTransform transform{{{XDoubleToFixed(4), 0, 0}, {0, XDoubleToFixed(4), 0}, {0, 0, XDoubleToFixed(1)}}};
             XRenderSetPictureTransform(display, picture, &transform);
             XRenderSetPictureFilter(display, picture, FilterBilinear, nullptr, 0);

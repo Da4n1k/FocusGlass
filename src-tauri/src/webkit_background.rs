@@ -135,7 +135,7 @@ mod tests {
                 keep_processing(&view)?
             );
         }
-        let blur = Rc::new(crate::linux_blur::LinuxBlur::start());
+        let blur = Rc::new(crate::linux_blur::LinuxBlur::start(None));
         let samples = Rc::new(RefCell::new(Vec::<(Instant, bool)>::new()));
         for (name, hidden) in [("visibleTick", false), ("hiddenTick", true)] {
             let samples = Rc::clone(&samples);

@@ -51,7 +51,8 @@ export const LinuxBlurStatusPanel: React.FC<{ onStatus?: (status: LinuxBlurStatu
     ? 'Инверсия: метрика не превысила порог — размытие не требуется'
     : 'Внимание выше порога — размытие не требуется';
   if (!status.enabled) reason = 'Бэкенд отключён или графическая сессия недоступна';
-  else if (!status.available) reason = 'Композитор не предоставил размытие';
+  else if (status.backend === 'kwin-setup') reason = 'Подготовка эффекта KDE · при необходимости подтвердите установку в окне авторизации';
+  else if (!status.available) reason = 'Размытие отключено: нативный эффект недоступен';
   else if (status.active) reason = `Эффект включён · кадров: ${status.frames}`;
   else if (!overlayEnabled) reason = 'Оверлей выключен';
   else if (settings.overlayMode !== 'threshold_blur') reason = 'Выберите «Блюр по порогу»';
@@ -90,7 +91,9 @@ export const LinuxBlurStatusPanel: React.FC<{ onStatus?: (status: LinuxBlurStatu
         без дополнительного ожидания дефицита 45%.
         {status.adjustableRadius
           ? ` GPU-радиус регулируется. Защищено окон: ${status.protectedWindows}; кадров: ${status.frames}. Частицы реагируют на курсор.`
-          : ' Резервный Wayland-бэкенд: радиус задаёт композитор; для регулируемого эффекта установите плагин KWin из native/.'}
+          : status.backend === 'wayland-compositor-fallback'
+            ? ' Экспериментальный Wayland fallback: размывает также окно приложения.'
+            : ' Эффект KWin устанавливается и включается автоматически при запуске FocusGlass; ручная установка через терминал не нужна.'}
         При включённой инверсии направление сравнения обратное.
         Проверка ниже включает сквозной блюр на 3 секунды независимо от ЭЭГ.
       </p>
