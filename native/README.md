@@ -10,6 +10,12 @@ Shared C++20 / Qt / OpenGL renderer, with two adapters:
   uploads the reduced image to the same GPU renderer. Requires an existing
   compositing manager; never replaces the window manager.
 
+Blur uses a normalized separable Gaussian kernel (sigma = 1.5 × native radius),
+with contiguous neighboring texels and support up to three sigma. Large radii
+use progressive prefiltering; half-float intermediate textures, where supported,
+avoid repeated 8-bit rounding. This avoids sparse-tap contour duplication and gives edges a
+smooth Gaussian falloff. Both adapters use the same filter.
+
 The OS-authenticated controlling PID identifies FocusGlass windows, including its
 HUD; dock windows are also excluded. Docks use their input region (Wayland
 surface input / X11 ShapeInput), without the transparent buffer margins,

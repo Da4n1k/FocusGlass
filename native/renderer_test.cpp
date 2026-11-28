@@ -156,6 +156,49 @@ int main(int argc, char **argv)
         require(FocusGlass::revealOpacity({1,1},2.7,true)==1,
             "Introduction did not finish within 2.7 seconds");
         qInfo() << "PASS: GPU diagonal dots-before-blur timeline, 2.7 s completion; X11/Wayland composite parity; tight dock mask";
+        for (double sigma : {0.5,1.5,3.0,6.0}) {
+            const auto weights = FocusGlass::gaussianKernel(sigma);
+            double total = weights[0];
+            for (size_t i=1;i<weights.size();++i) {
+                require(weights[i] <= weights[i-1] && weights[i]>=0,
+                    "Gaussian kernel has negative weights or secondary peaks");
+                total += 2*weights[i];
+            }
+            require(std::abs(total-1)<0.00001,"Gaussian kernel changes constant scene brightness");
+        }
+        require(FocusGlass::gaussianKernel(0) == std::vector<float>{1},
+            "Zero sigma is not the identity filter");
+        // A black/white edge exposes sparse-tap ghosting much better than a
+        // checkerboard. Compare actual GPU pixels against a Gaussian CDF, and
+        // assert a monotone, gently changing profile rather than repeated edges.
+        std::vector<unsigned char> step(source.size(),255);
+        for (int y=0;y<height;++y) for (int x=0;x<width/2;++x) {
+            const int i=(y*width+x)*4;
+            step[i]=step[i+1]=step[i+2]=0;
+        }
+        glBindTexture(GL_TEXTURE_2D,textures[0]);
+        glTexSubImage2D(GL_TEXTURE_2D,0,0,0,width,height,GL_RGBA,GL_UNSIGNED_BYTE,step.data());
+        for (double radius : {3.0,8.0,16.0}) {
+            const auto edge = render(radius,{});
+            const double sigma = radius*1.5;
+            double maxError = 0;
+            int maxSlope = 0;
+            // Logical y=116 stays outside this fixture's particle rows.
+            const int row = (height-1-116)*width*4;
+            for (int x=8;x<width-8;++x) {
+                const double cdf = 0.5*(1+std::erf((x+0.5-width/2)/(sigma*std::sqrt(2.0))));
+                const double expected = 255*(0.985*cdf+0.015*0.88);
+                maxError = std::max(maxError,std::abs(edge[row+x*4]-expected));
+                const int slope = int(edge[row+(x+1)*4])-int(edge[row+x*4]);
+                require(slope>=0,"Gaussian edge has ringing or secondary contours");
+                maxSlope = std::max(maxSlope,slope);
+            }
+            require(maxError<4,"GPU blur does not follow a smooth Gaussian edge profile");
+            require(maxSlope<1.4*255/(sigma*std::sqrt(2.0))+1,
+                "GPU blur contains abrupt steps from sparse samples");
+            qInfo() << "PASS: Gaussian GPU edge, radius:" << radius
+                    << "max CDF error (0-255):" << maxError << "max adjacent step:" << maxSlope;
+        }
         FocusGlass::ParticleField field;
         FocusGlass::ParticleField reference;
         field.resize({400,300});

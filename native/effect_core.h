@@ -113,4 +113,6 @@ private:
 QString socketPath();
 bool finiteNumber(const QJsonObject &object, const char *key, double &value);
 double revealOpacity(QPointF normalizedPosition, double elapsed, bool blur);
+// Normalized symmetric Gaussian, center followed by positive offsets.
+std::vector<float> gaussianKernel(double sigma);
 }

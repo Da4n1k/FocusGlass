@@ -176,6 +176,21 @@ double revealOpacity(QPointF normalizedPosition, double elapsed, bool blur)
     return t*t*(3-2*t);
 }
 
+std::vector<float> gaussianKernel(double sigma)
+{
+    if (!std::isfinite(sigma) || sigma <= 0) return {1.0f};
+    const int support = int(std::ceil(std::min(32.0, 3.0*sigma)));
+    std::vector<float> weights(support+1);
+    double total = 1;
+    weights[0] = 1;
+    for (int i=1; i<=support; ++i) {
+        weights[i] = float(std::exp(-0.5*(i/sigma)*(i/sigma)));
+        total += 2*weights[i];
+    }
+    for (auto &weight : weights) weight /= float(total);
+    return weights;
+}
+
 void ParticleField::resize(const QSize &logicalSize)
 {
     if (size == logicalSize) return;
@@ -228,14 +243,16 @@ static constexpr auto blurSource = R"(
 #version 150
 uniform sampler2D source;
 uniform vec2 direction;
+uniform float weights[33];
+uniform int tapCount;
 in vec2 uv;
 out vec4 color;
 void main() {
-    vec3 sum = texture(source, uv).rgb * 0.227027;
-    sum += texture(source, uv + direction * 1.384615).rgb * 0.316216;
-    sum += texture(source, uv - direction * 1.384615).rgb * 0.316216;
-    sum += texture(source, uv + direction * 3.230769).rgb * 0.070270;
-    sum += texture(source, uv - direction * 3.230769).rgb * 0.070270;
+    vec3 sum = texture(source, uv).rgb * weights[0];
+    for (int i = 1; i <= tapCount; ++i) {
+        vec2 offset = direction * float(i);
+        sum += (texture(source, uv + offset).rgb + texture(source, uv - offset).rgb) * weights[i];
+    }
     color = vec4(sum, 1.0);
 })";
 static constexpr auto mixSource = R"(
@@ -355,13 +372,22 @@ Renderer::~Renderer()
     }
 }
 
+static GLint intermediateFormat()
+{
+    // Desktop GL 3 supports renderable half-floats. Some GLES compositors
+    // need an extension; retain a working normalized filter on those without it.
+    return epoxy_is_desktop_gl()
+        || epoxy_has_gl_extension("GL_EXT_color_buffer_float")
+        || epoxy_has_gl_extension("GL_EXT_color_buffer_half_float") ? GL_RGBA16F : GL_RGBA8;
+}
+
 void Renderer::allocate(const QSize &size)
 {
     if (size == bufferSize) return;
     bufferSize = size;
     for (int i = 0; i < 2; ++i) {
         glBindTexture(GL_TEXTURE_2D, textures[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size.width(), size.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, intermediateFormat(), size.width(), size.height(), 0, GL_RGBA, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -404,6 +430,11 @@ void Renderer::render(GLuint source, const QSize &sourceSize, const QRectF &rect
     const QMatrix4x4 identity;
     glUniformMatrix4fv(glGetUniformLocation(blurProgram, "transform"), 1, GL_FALSE, identity.constData());
     glUniform1i(glGetUniformLocation(blurProgram, "source"), 0);
+    const auto weightsLocation = glGetUniformLocation(blurProgram, "weights");
+    const auto countLocation = glGetUniformLocation(blurProgram, "tapCount");
+    const float identityWeight = 1;
+    glUniform1fv(weightsLocation, 1, &identityWeight);
+    glUniform1i(countLocation, 0);
     // Prefilter large radii with successive exact 2x reductions. Jumping to a
     // small texture in one bilinear sample aliases text; widely spaced Gaussian
     // taps alone produce multiple sharp ghosts rather than a strong blur.
@@ -425,7 +456,7 @@ void Renderer::render(GLuint source, const QSize &sourceSize, const QRectF &rect
         if (level.size!=nextSize) {
             level.size=nextSize;
             glBindTexture(GL_TEXTURE_2D,level.texture);
-            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,nextSize.width(),nextSize.height(),0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
+            glTexImage2D(GL_TEXTURE_2D,0,intermediateFormat(),nextSize.width(),nextSize.height(),0,GL_RGBA,GL_FLOAT,nullptr);
             glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
@@ -446,9 +477,17 @@ void Renderer::render(GLuint source, const QSize &sourceSize, const QRectF &rect
         glBindFramebuffer(GL_FRAMEBUFFER, fbos[pass]);
         glViewport(0, 0, bufferSize.width(), bufferSize.height());
         glBindTexture(GL_TEXTURE_2D, pass == 0 ? filteredSource : textures[0]);
+        // Sample every neighboring texel, not sparse taps stretched by radius.
+        // Reduction bounds the kernel cost; sigma stays in logical pixels on
+        // both backends, independently of capture resolution and output DPI.
+        const double sigma = radius * 1.5 * (pass == 0
+            ? bufferSize.width()/rect.width() : bufferSize.height()/rect.height());
+        const auto weights = gaussianKernel(sigma);
+        glUniform1fv(weightsLocation, weights.size(), weights.data());
+        glUniform1i(countLocation, int(weights.size())-1);
         glUniform2f(glGetUniformLocation(blurProgram, "direction"),
-            pass == 0 ? radius / rect.width() : 0,
-            pass == 1 ? radius / rect.height() : 0);
+            pass == 0 ? 1.0/bufferSize.width() : 0,
+            pass == 1 ? 1.0/bufferSize.height() : 0);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, target);
