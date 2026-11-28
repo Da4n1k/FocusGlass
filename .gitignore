@@ -50,3 +50,4 @@ src-tauri/vendor/*.dylib
 src-tauri/vendor/*.lib
 native/build/
 native/stage/
+native/bundle/

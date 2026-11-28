@@ -1,0 +1,21 @@
+{
+  "phases": [
+    {
+      "blurActive": true,
+      "hiddenTicks": 0,
+      "maxGapMs": 22.845213,
+      "phase": "minimized",
+      "protectedWindows": 0,
+      "ticks": 251
+    },
+    {
+      "blurActive": true,
+      "hiddenTicks": 250,
+      "maxGapMs": 22.714629,
+      "phase": "hidden",
+      "protectedWindows": 0,
+      "ticks": 250
+    }
+  ],
+  "restoredWithoutInterruption": true
+}

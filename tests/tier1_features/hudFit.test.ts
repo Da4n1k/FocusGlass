@@ -2,6 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeHudWindowSize } from '../../src/components/hud/useFitHudWindow.ts';
 
+test('standalone HUD: no transparent gutter is reserved around the compact card, including HiDPI', () => {
+  assert.deepStrictEqual(computeHudWindowSize(320, 223, 0, 0, 1), { width: 320, height: 223 });
+  assert.deepStrictEqual(computeHudWindowSize(400, 279, 0, 0, 1), { width: 400, height: 279 });
+  assert.deepStrictEqual(computeHudWindowSize(320, 223, 0, 0, 2), { width: 640, height: 446 });
+  assert.deepStrictEqual(computeHudWindowSize(320.2, 223.1, 0, 0, 1.25), { width: 401, height: 279 });
+});
+
 test('HUD fit: the window is the card plus its margin on both sides', () => {
   // 320 x 223 px card with 20 px edges at 96 dpi.
   assert.deepStrictEqual(computeHudWindowSize(320, 223, 20, 20, 1), { width: 360, height: 263 });

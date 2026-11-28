@@ -9,6 +9,10 @@
 #include <effect/effectwindow.h>
 #include <opengl/glframebuffer.h>
 #include <opengl/gltexture.h>
+#include <scene/windowitem.h>
+#include <scene/surfaceitem.h>
+#include <scene/surfaceitem_wayland.h>
+#include <wayland/surface.h>
 #include <map>
 #include <memory>
 #include <QDir>
@@ -81,17 +85,42 @@ public:
         // shared renderer cannot do that. The default mipmapped filter would
         // otherwise make this single-level scene texture incomplete (black).
         out.source->bind();
-        std::vector<QRectF> protectedRects;
+        std::vector<FocusGlass::SurfaceMask> surfaces;
+        control.protectedControls = 0;
         for (auto *window : KWin::effects->stackingOrder()) {
-            if (window->isDeleted() || window->isMinimized()
-                || !window->isOnCurrentDesktop() || !window->isOnCurrentActivity()) continue;
+            // Also excludes hidden/unmapped and show-desktop windows. A stale
+            // rectangle must not leave a sharp hole after the dashboard hides.
+            if (window->isDeleted() || !window->isVisible() || window->opacity() <= 0) continue;
+            if (window->caption().startsWith("FocusGlass Overlay")) continue;
             const bool ownControls = control.ownerPid > 0 && window->pid() == control.ownerPid
                 && !window->caption().startsWith("FocusGlass Overlay");
-            if (window->isDock() || ownControls) {
-                protectedRects.emplace_back(QRectF(window->frameGeometry()).adjusted(-3, -3, 3, 3));
+            if (ownControls) ++control.protectedControls;
+            QRegion opaque;
+            std::optional<QRegion> protection;
+            if (const auto *item = window->windowItem()) {
+                if (const auto *surface = item->surfaceItem()) {
+                    if (window->opacity() >= 1) {
+                        const auto sceneOpaque = surface->mapToScene(surface->opaque());
+                        for (const auto &rect : sceneOpaque.rects())
+                            opaque += QRectF(rect).toAlignedRect();
+                    }
+                    if (window->isDock()) {
+                        if (const auto *wayland = qobject_cast<const KWin::SurfaceItemWayland *>(surface);
+                            wayland && wayland->surface()) {
+                            QRegion input;
+                            const auto sceneInput = surface->mapToScene(wayland->surface()->input());
+                            for (const auto &rect : sceneInput.rects())
+                                input += QRectF(rect).toAlignedRect();
+                            protection = input.intersected(QRegion(QRectF(window->frameGeometry()).toAlignedRect()));
+                        }
+                    }
+                }
             }
+            surfaces.push_back({QRectF(window->frameGeometry()),window->isDock() || ownControls,opaque,protection});
         }
-        control.protectedWindows = int(protectedRects.size());
+        const auto protectedRects = FocusGlass::visibleProtectedRects(surfaces);
+        control.protectedWindows = int(std::count_if(surfaces.begin(),surfaces.end(),
+            [](const auto &surface){return surface.protect;}));
         if (protectedRects.size() > 64) { control.error = "Too many protected windows; effect disabled for safety"; return painted; }
         const auto now = out.clock.isValid() ? out.clock.restart() : (out.clock.start(), 16);
         QMatrix4x4 canonicalToLogical;
@@ -99,7 +128,7 @@ public:
         canonicalToLogical.scale(logical.width()/2, -logical.height()/2);
         const auto outputTransform = viewport.projectionMatrix() * canonicalToLogical;
         const bool testProbe = qEnvironmentVariableIsSet("FOCUSGLASS_EFFECT_TEST_PROBE");
-        const bool oneShotProbe = control.diagnosticSerial != out.diagnosticSerial && control.elapsed > 3.8;
+        const bool oneShotProbe = control.diagnosticSerial != out.diagnosticSerial && control.elapsed > 2.75;
         const bool probeEnabled = (testProbe && control.elapsed > 1.8) || oneShotProbe;
         GLint boundDrawFramebuffer = 0;
         glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &boundDrawFramebuffer);
@@ -169,7 +198,7 @@ public:
                 {"scale", viewport.scale()}, {"projectionY", double(viewport.projectionMatrix()(1,1))},
                 {"renderer", QString::fromLatin1(reinterpret_cast<const char *>(glGetString(GL_RENDERER)))}};
             out.diagnosticSerial = control.diagnosticSerial;
-            if (testProbe && !out.saved && control.amount > .4 && control.elapsed > 3.8) {
+            if (testProbe && !out.saved && control.amount > .4 && control.elapsed > 2.75) {
                 const auto directory = qEnvironmentVariable("FOCUSGLASS_EFFECT_TEST_PROBE");
                 if (QDir(directory).exists()) {
                     QImage(before.data(),size.width(),size.height(),QImage::Format_RGBA8888).flipped(Qt::Vertical).save(directory+"/original.png");

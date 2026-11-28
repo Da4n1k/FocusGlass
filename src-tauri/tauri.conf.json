@@ -4,9 +4,9 @@
   "version": "1.0.0",
   "identifier": "com.neurotech.focusglass",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "node scripts/prepare-native.mjs && npm run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "node scripts/prepare-native.mjs && npm run build",
     "frontendDist": "../dist"
   },
   "app": {

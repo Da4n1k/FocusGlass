@@ -1,5 +1,5 @@
 //! Native GPU effect controller (KWin plugin / XComposite helper), with a
-//! compositor-controlled Wayland layer-shell fallback. No GTK/input changes.
+//! compositor-controlled Wayland layer-shell fallback (unsafe, explicit opt-in).
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -48,15 +48,20 @@ pub struct LinuxBlur {
 }
 
 impl LinuxBlur {
-    pub fn start() -> Self {
+    pub fn start(resource_dir: Option<PathBuf>) -> Self {
         let enabled = backend_enabled(
             std::env::var("FOCUSGLASS_WAYLAND_BLUR").ok().as_deref(),
             std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some(),
         );
-        Self::start_enabled(enabled)
+        Self::start_worker(enabled, resource_dir, true)
     }
 
+    #[cfg(test)]
     fn start_enabled(enabled: bool) -> Self {
+        Self::start_worker(enabled, None, false)
+    }
+
+    fn start_worker(enabled: bool, resource_dir: Option<PathBuf>, automatic_setup: bool) -> Self {
         let target = Arc::new(Mutex::new(Target::default()));
         let status = Arc::new(Mutex::new(Status {
             linux: true,
@@ -86,14 +91,37 @@ impl LinuxBlur {
                 .spawn(move || {
                     let x11 = std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("x11")
                         || std::env::var_os("WAYLAND_DISPLAY").is_none();
+                    if !x11 && automatic_setup
+                        && std::env::var("FOCUSGLASS_AUTO_INSTALL_KWIN").as_deref() != Ok("0")
+                    {
+                        if let Ok(mut s) = worker_status.lock() {
+                            s.backend = "kwin-setup".into();
+                            s.message = "Preparing KDE effect; installation may request administrator authorization".into();
+                        }
+                        if let Err(error) = prepare_kwin_effect(resource_dir.as_deref()) {
+                            set_status(&worker_status, false, error.to_string());
+                            return;
+                        }
+                    }
                     let native_socket = effect_socket_path();
                     let result = if x11 || native_socket.exists() {
-                        run_native(target, &worker_status, receiver, x11, native_socket)
-                    } else {
+                        run_native(target, &worker_status, receiver, x11, native_socket, resource_dir.as_deref())
+                    } else if compositor_fallback_allowed(
+                        std::env::var("FOCUSGLASS_UNSAFE_WAYLAND_BLUR_FALLBACK").ok().as_deref(),
+                    ) {
                         if let Ok(mut s) = worker_status.lock() {
                             s.backend = "wayland-compositor-fallback".into();
                         }
                         run(target, &worker_status, receiver)
+                    } else {
+                        if let Ok(mut s) = worker_status.lock() {
+                            s.backend = "native-effect-required".into();
+                        }
+                        Err(wayland_error(
+                            "FocusGlass KWin effect is not loaded. Install the matching native/ plugin \
+                             and enable it in KDE Desktop Effects. Fullscreen Wayland fallback is \
+                             disabled because it also blurs the FocusGlass dashboard and HUD.",
+                        ))
                     };
                     if let Err(error) = result {
                         set_status(&worker_status, false, error.to_string());
@@ -183,6 +211,60 @@ fn backend_enabled(setting: Option<&str>, has_wayland_display: bool) -> bool {
     setting != Some("0") && (has_wayland_display || setting == Some("1"))
 }
 
+fn compositor_fallback_allowed(setting: Option<&str>) -> bool {
+    // Layer-shell cannot exclude another application's GTK windows or render
+    // the shared particle wave. Never silently substitute it for the GPU effect.
+    setting == Some("1")
+}
+
+fn prepare_kwin_effect(resource_dir: Option<&std::path::Path>) -> AppResult<()> {
+    let mut candidates = Vec::new();
+    if cfg!(debug_assertions) {
+        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../native/bundle"));
+        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../native/build"));
+    }
+    if let Some(root) = resource_dir {
+        candidates.push(root.join("native"));
+    }
+    let directory = candidates
+        .into_iter()
+        .find(|root| root.join("focusglass-native-setup").is_file())
+        .ok_or_else(|| {
+            wayland_error(
+                "The FocusGlass package does not contain its KDE setup helper. \
+             Reinstall the matching Linux package; blur remains disabled.",
+            )
+        })?;
+    let bundled = directory.join("focusglass.so");
+    let plugin = if bundled.is_file() {
+        bundled
+    } else {
+        directory.join("plugins/kwin/effects/plugins/focusglass.so")
+    };
+    let result = Command::new(directory.join("focusglass-native-setup"))
+        .env("QT_FORCE_STDERR_LOGGING", "1")
+        .arg("--ensure-kwin")
+        .arg(plugin)
+        .output()?;
+    if !result.status.success() {
+        return Err(wayland_error(format!(
+            "Automatic KDE effect setup failed: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_native_version(reply: &serde_json::Value) -> AppResult<()> {
+    if reply["protocolVersion"].as_u64() != Some(2) {
+        return Err(wayland_error(
+            "Native FocusGlass effect version mismatch after setup. Blur remains disabled. \
+             Restart FocusGlass; if this persists, install a matching FocusGlass update.",
+        ));
+    }
+    Ok(())
+}
+
 fn should_blur(opacity: f64, blur_px: f64) -> bool {
     opacity > 0.0 && blur_px > 0.0
 }
@@ -265,6 +347,7 @@ fn run_native(
     receiver: Receiver<()>,
     x11: bool,
     socket: PathBuf,
+    resource_dir: Option<&std::path::Path>,
 ) -> AppResult<()> {
     let mut helper = Helper(None, socket.clone());
     if x11 && UnixStream::connect(&socket).is_err() {
@@ -278,6 +361,9 @@ fn run_native(
             std::fs::remove_file(&socket)?;
         }
         let mut candidates = Vec::new();
+        if let Some(root) = resource_dir {
+            candidates.push(root.join("native/focusglass-x11"));
+        }
         if let Some(path) = std::env::var_os("FOCUSGLASS_X11_HELPER") {
             candidates.push(PathBuf::from(path));
         }
@@ -335,6 +421,7 @@ fn run_native(
     connection.set_write_timeout(Some(Duration::from_secs(1)))?;
     let mut stream = BufReader::new(connection);
     let reply = native_request(&mut stream, serde_json::json!({"op":"status"}))?;
+    validate_native_version(&reply)?;
     if let Ok(mut s) = status.lock() {
         s.backend = reply["backend"].as_str().unwrap_or("native-gpu").into();
         s.adjustable_radius = true;
@@ -718,6 +805,21 @@ delegate_noop!(WaylandState: ignore wayland_client::protocol::wl_region::WlRegio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compositor_fallback_cannot_silently_blur_the_controls() {
+        assert!(!compositor_fallback_allowed(None));
+        assert!(!compositor_fallback_allowed(Some("0")));
+        assert!(!compositor_fallback_allowed(Some("true")));
+        assert!(compositor_fallback_allowed(Some("1")));
+    }
+
+    #[test]
+    fn outdated_native_effect_is_rejected_before_sending_blur_frames() {
+        assert!(validate_native_version(&serde_json::json!({"ok":true})).is_err());
+        assert!(validate_native_version(&serde_json::json!({"protocolVersion":1})).is_err());
+        assert!(validate_native_version(&serde_json::json!({"protocolVersion":2})).is_ok());
+    }
 
     #[test]
     fn positive_request_activates_without_a_second_radius_threshold() {

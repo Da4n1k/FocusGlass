@@ -11,6 +11,8 @@ mod overlay;
 mod screen_blur;
 mod storage;
 mod tray;
+#[cfg(target_os = "linux")]
+mod webkit_background;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -93,7 +95,17 @@ fn restore_control(app: &AppHandle) {
 
 fn setup(app: &AppHandle, restore_shortcut: Shortcut) -> AppResult<()> {
     #[cfg(target_os = "linux")]
-    app.manage(linux_blur::LinuxBlur::start());
+    {
+        app.manage(linux_blur::LinuxBlur::start(app.path().resource_dir().ok()));
+        let main = app.get_webview_window(overlay::MAIN_LABEL)
+            .ok_or(crate::error::AppError::WindowNotFound(overlay::MAIN_LABEL))?;
+        main.with_webview(|platform| {
+            match webkit_background::keep_processing(&platform.inner()) {
+                Ok(features) => eprintln!("[FocusGlass] Background EEG/IPC enabled: {}",features.join(", ")),
+                Err(error) => eprintln!("[FocusGlass] {error}; minimized EEG/IPC may be throttled"),
+            }
+        })?;
+    }
     let app_data_dir = app.path().app_data_dir()?;
     let resource_dir = app.path().resource_dir().ok();
     let dumps_dir = app

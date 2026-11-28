@@ -48,6 +48,7 @@ public:
         pidAtom = XInternAtom(display, "_NET_WM_PID", False);
         typeAtom = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
         dockAtom = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DOCK", False);
+        opaqueAtom = XInternAtom(display, "_NET_WM_OPAQUE_REGION", False);
     }
     ~Capture() { clear(); }
     QSize rootSize() const {
@@ -70,6 +71,7 @@ public:
     }
     void exclude(Window window) { own.insert(window); }
     std::vector<QRectF> protectedRects;
+    int protectedWindows = 0;
     QImage frame(qint64 ownerPid, QString &error)
     {
         const auto rootDimensions = rootSize();
@@ -89,6 +91,7 @@ public:
             error = "Cannot enumerate X11 scene"; return {};
         }
         protectedRects.clear();
+        std::vector<FocusGlass::SurfaceMask> surfaces;
         for (unsigned i = 0; i < count; ++i) {
             const Window window = children[i];
             if (own.contains(window)) continue;
@@ -96,8 +99,6 @@ public:
             if (!XGetWindowAttributes(display, window, &attrs) || attrs.map_state != IsViewable
                 || attrs.c_class == InputOnly || attrs.width <= 0 || attrs.height <= 0) continue;
             const QRectF rectangle(attrs.x, attrs.y, attrs.width, attrs.height);
-            if (isProtected(window, ownerPid, 0))
-                protectedRects.push_back(rectangle.adjusted(-3, -3, 3, 3));
 
             lastXError = 0;
             const Pixmap named = XCompositeNameWindowPixmap(display, window);
@@ -106,6 +107,37 @@ public:
             auto *format = XRenderFindVisualFormat(display, attrs.visual);
             if (!format) { XFreePixmap(display, named); continue; }
             const Picture picture = XRenderCreatePicture(display, named, format, 0, nullptr);
+            std::optional<QRegion> opaque;
+            if (format->type == PictTypeDirect && format->direct.alphaMask) {
+                // ARGB compositor/decoration surfaces can be fullscreen but
+                // mostly transparent. Never let their bounds punch out all
+                // protected regions underneath.
+                opaque = QRegion();
+                const auto values = property(display,window,opaqueAtom,XA_CARDINAL);
+                for (size_t n=0; n+3<values.size(); n+=4) {
+                    if (values[n+2]>unsigned(attrs.width) || values[n+3]>unsigned(attrs.height)) continue;
+                    const int x = qint32(values[n]), y = qint32(values[n+1]);
+                    if (x < -attrs.width || x > attrs.width || y < -attrs.height || y > attrs.height) continue;
+                    const QRect local(x,y,int(values[n+2]),int(values[n+3]));
+                    *opaque += local.intersected(QRect(0,0,attrs.width,attrs.height)).translated(attrs.x,attrs.y);
+                }
+            }
+            std::optional<QRegion> protection;
+            const auto types = property(display, window, typeAtom, XA_ATOM);
+            if (std::find(types.begin(), types.end(), dockAtom) != types.end()) {
+                int count = 0, ordering = 0;
+                lastXError = 0;
+                auto *rects = XShapeGetRectangles(display, window, ShapeInput, &count, &ordering);
+                if (!lastXError) {
+                    QRegion input;
+                    for (int n = 0; n < count; ++n)
+                        input += QRect(attrs.x + rects[n].x, attrs.y + rects[n].y,
+                            rects[n].width, rects[n].height);
+                    protection = input.intersected(QRegion(rectangle.toAlignedRect()));
+                }
+                if (rects) XFree(rects);
+            }
+            surfaces.push_back({rectangle,isProtected(window, ownerPid, 0),opaque,protection});
             XTransform transform{{{XDoubleToFixed(4), 0, 0}, {0, XDoubleToFixed(4), 0}, {0, 0, XDoubleToFixed(1)}}};
             XRenderSetPictureTransform(display, picture, &transform);
             XRenderSetPictureFilter(display, picture, FilterBilinear, nullptr, 0);
@@ -116,6 +148,9 @@ public:
             XFreePixmap(display, named);
         }
         if (children) XFree(children);
+        protectedRects = FocusGlass::visibleProtectedRects(surfaces);
+        protectedWindows = int(std::count_if(surfaces.begin(),surfaces.end(),
+            [](const auto &surface){return surface.protect;}));
         auto *image = XGetImage(display, pixmap, 0, 0, size.width(), size.height(), AllPlanes, ZPixmap);
         if (!image) { error = "X11 scene readback denied or unavailable"; return {}; }
         QImage result(size, QImage::Format_RGBA8888);
@@ -168,7 +203,7 @@ private:
     }
     Display *display;
     Window root;
-    Atom pidAtom, typeAtom, dockAtom;
+    Atom pidAtom, typeAtom, dockAtom, opaqueAtom;
     std::set<Window> own;
     QSize size;
     Pixmap pixmap = 0;
@@ -232,7 +267,7 @@ protected:
         } else {
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, image.width(), image.height(), GL_RGBA, GL_UNSIGNED_BYTE, image.constBits());
         }
-        control.protectedWindows = int(capture.protectedRects.size());
+        control.protectedWindows = capture.protectedWindows;
         renderer->render(source, sourceSize, QRectF(geometry()), size()*devicePixelRatio(),
             capture.protectedRects, control.amount, control.radius, control.elapsed,
             capture.cursor(), clock.restart()/1000.0, control.frozen, true);

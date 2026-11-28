@@ -22,6 +22,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 # Already pulled in by tauri/wry; used directly to ask GDK whether the screen is composited.
 gtk = "0.18"
+webkit2gtk = { version = "2.0", features = ["v2_22"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }

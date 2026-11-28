@@ -9,10 +9,27 @@
 #include <QSize>
 #include <QTimer>
 #include <QMatrix4x4>
+#include <QRegion>
+#include <optional>
 #include <functional>
 #include <vector>
 
 namespace FocusGlass {
+
+struct SurfaceMask {
+    QRectF rect;
+    bool protect = false;
+    // If known, use the compositor's genuinely opaque region, not the bounding
+    // rectangle of a transparent fullscreen surface. nullopt is the X11 fallback.
+    std::optional<QRegion> opaque = std::nullopt;
+    // Docks often have large transparent margins for shadows/autohide. Protect
+    // their actual input region, not the buffer bounds or reserved work area.
+    std::optional<QRegion> protection = std::nullopt;
+};
+// Bottom-to-top stacking order, containing only currently visible surfaces.
+// A foreground foreign window must not inherit the sharp rectangle of controls
+// below it. Recomputed each frame, never cached across hide/move/minimize.
+std::vector<QRectF> visibleProtectedRects(const std::vector<SurfaceMask> &surfaces);
 
 // Local, same-user, bounded JSON protocol. No privileged service or screen-capture portal.
 class ControlServer {
@@ -28,6 +45,7 @@ public:
     qint64 ownerPid = 0;
     quint64 frames = 0;
     int protectedWindows = 0;
+    int protectedControls = 0;
     QString error;
     QJsonObject diagnostics;
     quint64 diagnosticSerial = 0; // Explicit opt-in; one scalar-only GPU probe per output.
@@ -46,6 +64,7 @@ private:
     double requestedRadius = 4;
     double previewRadius = 8;
     bool wasRunning = false;
+    bool diagnosticPreview = false;
 };
 
 struct Particle {
@@ -93,4 +112,7 @@ private:
 
 QString socketPath();
 bool finiteNumber(const QJsonObject &object, const char *key, double &value);
+double revealOpacity(QPointF normalizedPosition, double elapsed, bool blur);
+// Normalized symmetric Gaussian, center followed by positive offsets.
+std::vector<float> gaussianKernel(double sigma);
 }
